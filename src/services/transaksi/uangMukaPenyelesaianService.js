@@ -1,0 +1,1201 @@
+const db = require("../../config/database");
+const { cekTutupPeriode } = require("../../services/tutupBukuService");
+
+// ── Load form penyelesaian ────────────────────────────────────────────
+const getFormData = async (nomor) => {
+  // Header kasbon
+  const [[bon]] = await db.query(
+    `
+  SELECT k.bon_nomor, k.bon_selesai, k.bon_jenis, k.bon_tanggal,
+    k.bon_pjh_nomor, k.bon_jur_no, k.bon_rek_kode,
+    k.bon_nota, k.bon_nominal, k.bon_penerima,
+    k.bon_keterangan,
+    k.bon_cabang, k.bon_byrvoucher,
+    r.rek_nama,
+    DATE_FORMAT(k.bon_tanggal,'%Y-%m-%d') AS bon_tanggal_fmt,
+    DATE_FORMAT(t.jur_tanggal, '%Y-%m-%d') AS jur_tanggal_fmt
+  FROM tkasbon k
+  LEFT JOIN tjurnal t ON t.jur_no = k.bon_jur_no
+  LEFT JOIN trekening r ON r.rek_kode = k.bon_rek_kode
+  WHERE k.bon_nomor = ?
+`,
+    [nomor],
+  );
+
+  if (!bon) throw new Error("Nomor kasbon tidak ditemukan.");
+
+  const isEdit = Number(bon.bon_selesai) !== 0;
+  const nomerator = Number(bon.bon_jenis) === 0 ? "BKK" : "BBK";
+  const today = new Date().toISOString().slice(0, 10);
+
+  const tglBkk = bon.jur_tanggal_fmt || today;
+
+  // ── Detail non-GA dari tkasbonitem ──────────────────────────────
+  const [itemRows] = await db.query(
+    `
+    SELECT k.*,
+      r.rek_nama,
+      c.cc_nama,
+      k.bond_nourut AS no,
+      k.bond_nama   AS uraian,
+      k.bond_spesifikasi AS spesifikasi,
+      k.bond_satuan AS satuan,
+      k.bond_sup_kode AS kdsup,
+      k.bond_sup_nama AS supplier,
+      k.bond_bank AS bank,
+      k.bond_rekening AS rekening,
+      k.bond_atasnama AS atasnama,
+      k.bond_rek_kode  AS rekkode,
+      k.bond_cc_kode   AS cckode,
+      k.bond_dcnama    AS dcnama,
+      k.bond_verified  AS verified_raw,
+      k.bond_qty_realisasi,
+      k.bond_nominal_realisasi
+    FROM tkasbonitem k
+    LEFT JOIN trekening r ON r.rek_kode = k.bond_rek_kode
+    LEFT JOIN tcostcenter c ON c.cc_kode = k.bond_cc_kode
+    WHERE k.bond_nomor = ?
+    ORDER BY k.bond_nourut
+  `,
+    [nomor],
+  );
+
+  const detailNonGA = itemRows.map((r) => {
+    // Delphi: jika flagedit dan bond_verified<>0 → pakai realisasi, else pakai original
+    const qty =
+      isEdit && Number(r.verified_raw) !== 0
+        ? Number(r.bond_qty_realisasi)
+        : Number(r.bond_qty);
+    const harga =
+      isEdit && Number(r.verified_raw) !== 0
+        ? Number(r.bond_nominal_realisasi)
+        : Number(r.bond_nominal);
+    return {
+      no: r.no,
+      pjh: "",
+      pmt: "",
+      uraian: r.uraian,
+      spesifikasi: r.spesifikasi || "",
+      satuan: r.satuan || "",
+      qty,
+      harga,
+      total: qty * harga,
+      verified: isEdit ? Number(r.verified_raw) !== 0 : true,
+      guna: "",
+      ga: 2, // non-GA existing
+      rekkode: r.rekkode || "",
+      reknama: r.rek_nama || "",
+      cckode: r.cckode || 0,
+      ccnama: r.cc_nama || "",
+      dcnama: r.dcnama || "",
+      kdsup: r.kdsup || "",
+      supplier: r.supplier || "",
+      bank: r.bank || "",
+      rekening: r.rekening || "",
+      atasnama: r.atasnama || "",
+      gabrg: 0,
+      edit: isEdit ? 1 : 0,
+      pjh_link: "",
+      kdbrg: "",
+      mb: "",
+      jenis_item: "",
+      cab_item: "",
+    };
+  });
+
+  // ── Detail GA dari tpermintaan_dtl ────────────────────────────────
+  const [gaRows] = await db.query(
+    `
+    SELECT
+      h.pmt_pjh_nomor, h.pmt_nomor, h.pmt_buyed,
+      DATE_FORMAT(j.pjh_tanggal,'%Y-%m-%d') AS pjh_tanggal,
+      DATE_FORMAT(h.pmt_tanggal,'%Y-%m-%d') AS pmt_tanggal,
+      j.pjh_jenis_permintaan, j.pjh_nonga,
+      j.pjh_nik, p.nama, p.bagian, p.lokasi,
+      d.pmd_nourut, d.pmd_nama, d.pmd_spesifikasi,
+      d.pmd_qty_riil, d.pmd_satuan,
+      d.pmd_qty_buyed, d.pmd_nilai, d.pmd_nilai_buyed,
+      d.pmd_dana_approved, d.pmd_tanggal_reject,
+      d.pmd_bon, d.pmd_kegunaan, d.pmd_verified_buyed,
+      d.pmd_nilai_terpakai, d.pmd_tanggal_approved,
+      d.pmd_tanggal_buyed, d.pmd_rek_kode,
+      r.rek_nama, d.pmd_cc_kode, c.cc_nama, d.pmd_dcnama
+    FROM tkasbon k
+    INNER JOIN ga2.tpermintaan_dtl d ON d.pmd_bon = k.bon_nomor
+    INNER JOIN ga2.tpermintaan_hdr h ON h.pmt_nomor = d.pmd_pmt_nomor
+    INNER JOIN ga2.tpengajuan2_hdr j ON j.pjh_nomor = h.pmt_pjh_nomor
+    INNER JOIN ga2.peminta p ON p.nik = j.pjh_nik
+    LEFT JOIN trekening r ON r.rek_kode = d.pmd_rek_kode
+    LEFT JOIN tcostcenter c ON c.cc_kode = d.pmd_cc_kode
+    WHERE h.pmt_approval = 1 AND d.pmd_tanggal_approved IS NOT NULL
+      AND k.bon_nomor = ?
+    ORDER BY d.pmd_nourut
+  `,
+    [nomor],
+  );
+
+  // Header info permintaan dari baris pertama GA
+  let infoPermintaan = null;
+  if (gaRows.length > 0 && bon.bon_pjh_nomor) {
+    const g = gaRows[0];
+    infoPermintaan = {
+      pjh_nomor: g.pmt_pjh_nomor,
+      pjh_tanggal: g.pjh_tanggal,
+      pmt_nomor: g.pmt_nomor,
+      pmt_tanggal: g.pmt_tanggal,
+      jenis_permintaan: g.pjh_jenis_permintaan,
+      pjh_nik: g.pjh_nik,
+      nama: g.nama,
+      bagian: g.bagian,
+      lokasi: g.lokasi,
+    };
+  }
+
+  const detailGA = gaRows
+    .filter((r) => r.pmd_nama)
+    .map((r) => {
+      const isGabrg =
+        r.pjh_jenis_permintaan?.toUpperCase() === "PERMINTAAN BARANG" &&
+        Number(r.pjh_nonga) === 0;
+
+      // Delphi: jika flagedit dan pmd_verified_buyed<>0 → pakai buyed, else pakai approved/nilai
+      let qty, harga;
+      if (isEdit && Number(r.pmd_verified_buyed) !== 0) {
+        qty = Number(r.pmd_qty_buyed);
+        harga = Number(r.pmd_nilai_buyed);
+      } else {
+        qty = Number(r.pmd_qty_riil);
+        harga =
+          Number(r.pmd_dana_approved) !== 0
+            ? Number(r.pmd_dana_approved)
+            : Number(r.pmd_nilai);
+      }
+
+      return {
+        no: r.pmd_nourut,
+        pjh: bon.bon_pjh_nomor ? "" : r.pmt_pjh_nomor || "",
+        pmt: r.pmt_nomor,
+        uraian: r.pmd_nama,
+        spesifikasi: r.pmd_spesifikasi || "",
+        satuan: r.pmd_satuan || "",
+        qty,
+        harga,
+        total: qty * harga,
+        verified: isEdit ? Number(r.pmd_verified_buyed) !== 0 : true,
+        guna: r.pmd_kegunaan || "",
+        ga: 1,
+        rekkode: r.pmd_rek_kode || "",
+        reknama: r.rek_nama || "",
+        cckode: r.pmd_cc_kode || 0,
+        ccnama: r.cc_nama || "",
+        dcnama: r.pmd_dcnama || "",
+        kdsup: "",
+        supplier: "",
+        bank: "",
+        rekening: "",
+        atasnama: "",
+        gabrg: isGabrg ? 1 : 0,
+        edit: isEdit ? 1 : 0,
+        pjh_link: "",
+        kdbrg: "",
+        mb: "",
+        jenis_item: "",
+        cab_item: "",
+      };
+    });
+
+  // ── Detail tkasbonitem2 (item baru non-GA/POE/voucher) ─────────────
+  const [item2Rows] = await db.query(
+    `
+    SELECT k.*,
+      r.rek_nama, c.cc_nama,
+      IF(k.bond2_link='','',
+        IFNULL(m.mb_jenis, v.iv_jenis)) AS jenis_item,
+      IF(k.bond2_link='','',
+        IFNULL(m.mb_cab, v.iv_cab)) AS cab_item,
+      IF(k.bond2_link='','',
+        IFNULL(m.mb_nomor,'')) AS mb
+    FROM tkasbonitem2 k
+    LEFT JOIN trekening r ON r.rek_kode = k.bond2_rek_kode
+    LEFT JOIN tcostcenter c ON c.cc_kode = k.bond2_cc_kode
+    LEFT JOIN kencanaprint.tgarmenmintabeli_hdr m ON m.mb_nomor = k.bond2_link
+    LEFT JOIN kencanaprint.tgarmeniv_hdr v ON v.iv_nomor = k.bond2_link
+    WHERE k.bond2_nomor = ?
+    ORDER BY k.bond2_nourut
+  `,
+    [nomor],
+  );
+
+  const detailItem2 = item2Rows.map((r) => ({
+    no: r.bond2_nourut,
+    pjh: r.bond2_link || "",
+    pmt: "",
+    uraian: r.bond2_nama,
+    spesifikasi: r.bond2_spesifikasi || "",
+    satuan: r.bond2_satuan || "",
+    qty: Number(r.bond2_qty_realisasi),
+    harga: Number(r.bond2_nominal_realisasi),
+    total: Number(r.bond2_qty_realisasi) * Number(r.bond2_nominal_realisasi),
+    verified: true,
+    guna: "",
+    ga: 0,
+    rekkode: r.bond2_rek_kode || "",
+    reknama: r.rek_nama || "",
+    cckode: r.bond2_cc_kode || 0,
+    ccnama: r.cc_nama || "",
+    dcnama: r.bond2_dcnama || "",
+    kdsup: r.bond2_sup_kode || "",
+    supplier: r.bond2_sup_nama || "",
+    bank: r.bond2_bank || "",
+    rekening: r.bond2_rekening || "",
+    atasnama: r.bond2_atasnama || "",
+    gabrg: 0,
+    edit: isEdit ? 1 : 0,
+    pjh_link: r.bond2_link || "",
+    kdbrg: r.bond2_brg_kode || "",
+    mb: r.mb || "",
+    jenis_item: r.jenis_item || "",
+    cab_item: r.cab_item || "",
+  }));
+
+  // Urutan: non-GA dulu, lalu GA, lalu item2
+  const detail = [...detailNonGA, ...detailGA, ...detailItem2];
+
+  return {
+    nomor: bon.bon_nomor,
+    jenis: Number(bon.bon_jenis) === 0 ? "KAS" : "BANK",
+    nomerator,
+    tanggal: bon.bon_tanggal_fmt,
+    tgl_bkk: tglBkk,
+    no_bkk: bon.bon_jur_no || "",
+    rek_kode: bon.bon_rek_kode,
+    rek_nama: bon.rek_nama,
+    pjh_nomor: bon.bon_pjh_nomor || "",
+    nota: bon.bon_nota || "",
+    nominal: Number(bon.bon_nominal),
+    penerima: bon.bon_penerima || "",
+    keterangan: bon.bon_keterangan || "",
+    cabang: bon.bon_cabang,
+    is_edit: isEdit,
+    info_permintaan: infoPermintaan,
+    detail,
+  };
+};
+
+// ── Lookup account untuk penyelesaian ─────────────────────────────────
+const getAccountOptions = async (jenis, cabang) => {
+  let where =
+    jenis === "KAS"
+      ? `LEFT(rek_kode,5)='A-111'`
+      : `(LEFT(rek_kode,5)='A-112' OR LEFT(rek_kode,5)='B-211')`;
+  if (cabang && cabang !== "P01") where += ` AND rek_cabang = '${cabang}'`;
+
+  const [rows] = await db.query(
+    `SELECT rek_kode AS kode, rek_nama AS nama, rek_cabang AS cabang
+     FROM trekening WHERE ${where} ORDER BY rek_kode`,
+  );
+  return rows;
+};
+
+// ── Generate nomor BKK/BBK ────────────────────────────────────────────
+const getMaxNomorBkk = async (cabang, nomerator, conn) => {
+  const prefix = `${cabang}-${nomerator}.${new Date().getFullYear()}.`;
+  const [[row]] = await (conn || db).query(
+    `SELECT IFNULL(MAX(CAST(RIGHT(jur_no,5) AS UNSIGNED)),0) AS max_val
+     FROM tjurnal WHERE jur_no LIKE ?`,
+    [`${prefix}%`],
+  );
+  return `${prefix}${String(Number(row.max_val) + 1).padStart(5, "0")}`;
+};
+
+// ── Nomor otomatis BKM/BBM ────────────────────────────────────────────
+const getNomorOtomatis = async (bonNomor, conn) => {
+  const [[row]] = await (conn || db).query(
+    `SELECT IFNULL(MAX(CAST(LEFT(jur_no,2) AS UNSIGNED)),0) AS max_val
+     FROM tjurnal WHERE jur_otomatis=1 AND MID(jur_no,3,18)=?`,
+    [bonNomor],
+  );
+  return row.max_val;
+};
+
+// ── Generate nomor voucher bayar_debet: BYR/KODE/YY/NNNNN ─────────────
+const getVoucherNomor = async (kode, tanggal, conn) => {
+  const yy = new Date(tanggal).getFullYear().toString().slice(-2);
+  const prefix = `BYR/${kode}/${yy}`;
+  const [[row]] = await (conn || db).query(
+    `SELECT IFNULL(MAX(RIGHT(nomor,5)),'00000') AS mx
+     FROM kencanaprint.bayar_debet
+     WHERE LEFT(nomor,?) = ?`,
+    [prefix.length, prefix],
+  );
+  const next = Number(row.mx) + 1;
+  return `${prefix}${String(next).padStart(5, "0")}`;
+};
+
+// ── Simpan penyelesaian ───────────────────────────────────────────────
+const saveData = async (payload, user) => {
+  const {
+    nomor,
+    tgl_bkk,
+    rek_kode,
+    nota,
+    penerima,
+    keterangan,
+    cabang,
+    jenis,
+    nomerator,
+    detail,
+    pjh_nomor,
+    is_edit,
+    no_bkk_lama,
+    byrvoucher,
+  } = payload;
+
+  // ── Validasi Tutup Periode ──
+  const isDitutup = await cekTutupPeriode(tgl_bkk);
+  if (isDitutup) {
+    const err = new Error("Periode ini sudah di tutup");
+    err.status = 400;
+    throw err;
+  }
+
+  const conn = await db.getConnection();
+  await conn.beginTransaction();
+
+  try {
+    // Hitung total terpakai (verified & total > 0)
+    const totalTerpakai = detail.reduce(
+      (s, d) => s + (d.verified && d.total > 0 ? d.total : 0),
+      0,
+    );
+
+    let noBkk = no_bkk_lama || "";
+
+    if (totalTerpakai !== 0) {
+      if (is_edit && noBkk) {
+        // UPDATE tjurnal
+        await conn.query(
+          `
+          UPDATE tjurnal SET
+            jur_tanggal    = ?,
+            jur_rek_kode   = ?,
+            jur_nota       = ?,
+            jur_penerima   = ?,
+            jur_keterangan = ?,
+            jur_otomatis   = 0,
+            date_modified  = NOW(),
+            user_modified  = ?
+          WHERE jur_no = ?
+        `,
+          [
+            tgl_bkk,
+            rek_kode,
+            nota || "",
+            penerima,
+            keterangan || "",
+            user.kode,
+            noBkk,
+          ],
+        );
+      } else {
+        // INSERT tjurnal
+        noBkk = await getMaxNomorBkk(cabang, nomerator, conn);
+        await conn.query(
+          `
+          INSERT INTO tjurnal
+            (jur_no, jur_tanggal, jur_tipetransaksi, jur_keterangan,
+             jur_nota, jur_penerima, jur_cabang, jur_rek_kode,
+             jur_otomatis, date_create, user_create)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NOW(), ?)
+        `,
+          [
+            noBkk,
+            tgl_bkk,
+            nomerator,
+            keterangan || "",
+            nota || "",
+            penerima,
+            cabang,
+            rek_kode,
+            user.kode,
+          ],
+        );
+      }
+
+      // Update tkasbon: bon_selesai=1, bon_jur_no, bon_rek_kode
+      await conn.query(
+        `
+        UPDATE tkasbon SET bon_selesai=1, bon_jur_no=?, bon_rek_kode=?
+        WHERE bon_nomor=?
+      `,
+        [noBkk, rek_kode, nomor],
+      );
+    } else {
+      // Tidak ada terpakai → selesai tanpa jurnal
+      await conn.query(
+        `
+        UPDATE tkasbon SET bon_selesai=1, bon_rek_kode=?
+        WHERE bon_nomor=?
+      `,
+        [rek_kode, nomor],
+      );
+    }
+
+    // Hapus jurnal otomatis lama
+    await conn.query(
+      `DELETE FROM tjurnal WHERE jur_otomatis=1 AND MID(jur_no,3,18)=?`,
+      [nomor],
+    );
+    if (noBkk) {
+      await conn.query(`DELETE FROM tjurnalitem WHERE jurd_jur_no=?`, [noBkk]);
+    }
+    await conn.query(`DELETE FROM tkasbonitem2 WHERE bond2_nomor=?`, [nomor]);
+
+    await conn.query(
+      `DELETE FROM kencanaprint.tpoexternal_dtl2 WHERE poed2_link=?`,
+      [nomor],
+    );
+    await conn.query(
+      `DELETE FROM kencanaprint.bayar_debet_detail WHERE vou_link=?`,
+      [nomor],
+    );
+
+    // Insert kredit header di tjurnalitem
+    if (totalTerpakai !== 0 && noBkk) {
+      const firstVerified = detail.find((d) => d.verified && d.total > 0);
+      await conn.query(
+        `
+        INSERT INTO tjurnalitem
+          (jurd_jur_no, jurd_rek_kode, jurd_kredit, jurd_uraian,
+           jurd_sup_kode, jurd_sup_nama, jurd_bank, jurd_rekening, jurd_atasnama)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+        [
+          noBkk,
+          rek_kode,
+          totalTerpakai,
+          keterangan || "",
+          firstVerified?.kdsup || "",
+          firstVerified?.supplier || "",
+          firstVerified?.bank || "",
+          firstVerified?.rekening || "",
+          firstVerified?.atasnama || "",
+        ],
+      );
+    }
+
+    // Hitung max nourut
+    let nourut = 1;
+    if (pjh_nomor) {
+      const [[maxPjh]] = await conn.query(
+        `
+        SELECT IFNULL(MAX(x.nomer),0) AS max_val FROM (
+          SELECT d.pmd_nourut AS nomer FROM ga2.tpermintaan_dtl d
+          LEFT JOIN ga2.tpermintaan_hdr h ON h.pmt_nomor=d.pmd_pmt_nomor
+          WHERE h.pmt_pjh_nomor=?
+          UNION
+          SELECT bond_nourut AS nomer FROM tkasbonitem WHERE bond_nomor=?
+        ) x
+      `,
+        [pjh_nomor, nomor],
+      );
+      nourut = Number(maxPjh.max_val) + 1;
+    }
+
+    // Track nomor otomatis counter
+    let autoCounter = 0;
+
+    let vou = 0;
+    let currentByrVoucher = byrvoucher || "";
+
+    let cpmt = "";
+    for (const d of detail) {
+      const v = d.verified ? 1 : 0;
+
+      if (!d.uraian) {
+        nourut++;
+        continue;
+      }
+
+      // Update pmt_approval + pmt_buyed jika pmt berubah
+      if (d.pmt && d.pmt !== cpmt) {
+        let updatePmt = `UPDATE ga2.tpermintaan_hdr SET pmt_approval=1, pmt_buyed=1`;
+        if (d.gabrg === 0) updatePmt += `, pmt_close=1`;
+        updatePmt += ` WHERE pmt_nomor=?`;
+        await conn.query(updatePmt, [d.pmt]);
+        cpmt = d.pmt;
+      }
+
+      // GA (ga=1) → update tpermintaan_dtl
+      if (d.ga === 1) {
+        if (!v) {
+          // Tidak diverifikasi
+          let sql = `UPDATE ga2.tpermintaan_dtl SET
+            pmd_qty_buyed=0, pmd_nilai_buyed=0, pmd_verified_buyed=0,
+            pmd_bon=?`;
+          if (d.gabrg === 0)
+            sql += `, pmd_tanggal_closed=CURDATE(), pmd_user_closed='${user.kode}'`;
+          sql += ` WHERE pmd_pmt_nomor=? AND pmd_nourut=?`;
+          await conn.query(sql, [nomor, d.pmt, d.no]);
+        } else {
+          // Diverifikasi
+          let sql = `UPDATE ga2.tpermintaan_dtl SET
+            pmd_qty_buyed=?, pmd_nilai_buyed=?, pmd_verified_buyed=?,
+            pmd_rek_kode=?, pmd_cc_kode=?, pmd_dcnama=?, pmd_bon=?,
+            pmd_tanggal_approved=CURDATE(), pmd_user_approved=?,
+            pmd_dana_approved=?, pmd_tanggal_reject=NULL,
+            pmd_kode_reject=0, pmd_user_reject='',
+            pmd_tanggal_buyed=CURDATE(), pmd_user_buyed=?`;
+          if (d.gabrg === 0)
+            sql += `, pmd_tanggal_closed=CURDATE(), pmd_user_closed='${user.kode}'`;
+          sql += ` WHERE pmd_pmt_nomor=? AND pmd_nourut=?`;
+          await conn.query(sql, [
+            d.qty,
+            d.harga,
+            v,
+            d.rekkode || "",
+            d.cckode || 0,
+            d.dcnama || "",
+            nomor,
+            user.kode,
+            d.harga,
+            penerima,
+            d.pmt,
+            d.no,
+          ]);
+        }
+      }
+
+      // Non-GA existing (ga=2) → update tkasbonitem
+      if (d.ga === 2) {
+        await conn.query(
+          `
+          UPDATE tkasbonitem SET
+            bond_qty_realisasi=?, bond_nominal_realisasi=?,
+            bond_rek_kode=?, bond_cc_kode=?, bond_dcnama=?,
+            bond_verified=?,
+            bond_sup_kode=?, bond_sup_nama=?,
+            bond_bank=?, bond_rekening=?, bond_atasnama=?
+          WHERE bond_nomor=? AND bond_nourut=?
+        `,
+          [
+            d.qty,
+            d.harga,
+            d.rekkode || "",
+            d.cckode || 0,
+            d.dcnama || "",
+            v,
+            d.kdsup || "",
+            d.supplier || "",
+            d.bank || "",
+            d.rekening || "",
+            d.atasnama || "",
+            nomor,
+            d.no,
+          ],
+        );
+      }
+
+      // Non-GA baru (ga=0) → insert tkasbonitem2
+      if (d.ga === 0) {
+        const hasPjhLink =
+          ["POE", "VOU"].includes((d.pjh || "").substring(0, 3)) ||
+          ["MBA", "MBO", "MBS", "MBK"].includes(
+            (d.pjh || "").substring(0, 3),
+          ) ||
+          (d.pjh || "").substring(0, 2) === "IV";
+
+        await conn.query(
+          `
+            INSERT INTO tkasbonitem2
+              (bond2_nomor, bond2_nourut,
+              ${hasPjhLink ? "bond2_link, bond2_brg_kode," : ""}
+              bond2_nama, bond2_spesifikasi, bond2_satuan,
+              bond2_qty_realisasi, bond2_nominal_realisasi,
+              bond2_rek_kode, bond2_cc_kode, bond2_dcnama,
+              bond2_sup_kode, bond2_sup_nama,
+              bond2_bank, bond2_rekening, bond2_atasnama,
+              bond2_verified)
+            VALUES (?, ?${hasPjhLink ? ", ?, ?" : ""}, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [
+            nomor,
+            nourut,
+            ...(hasPjhLink ? [d.pjh || "", d.kdbrg || ""] : []),
+            d.uraian,
+            d.spesifikasi || "",
+            d.satuan || "",
+            d.qty,
+            d.harga,
+            d.rekkode || "",
+            d.cckode || 0,
+            d.dcnama || "",
+            d.kdsup || "",
+            d.supplier || "",
+            d.bank || "",
+            d.rekening || "",
+            d.atasnama || "",
+            v, // ← bond2_verified
+          ],
+        );
+        nourut++;
+
+        const cpjh3 = (d.pjh || "").substring(0, 3);
+
+        // 1. Logika Voucher Hutang (VOU)
+        if (v && cpjh3 === "VOU") {
+          if (vou === 0) {
+            // Simpan header bayar_debet 1 kali saja
+            if (!currentByrVoucher) {
+              const kodeBayar = jenis === "KAS" ? "CS" : "BT";
+              currentByrVoucher = await getVoucherNomor(
+                kodeBayar,
+                tgl_bkk,
+                conn,
+              );
+              await conn.query(
+                `UPDATE tkasbon SET bon_byrvoucher=? WHERE bon_nomor=?`,
+                [currentByrVoucher, nomor],
+              );
+            }
+
+            // Catatan: totalTerpakai digunakan di sini untuk menggantikan xrpvou dari Delphi
+            await conn.query(
+              `INSERT INTO kencanaprint.bayar_debet 
+                (nomor, kode, account, tanggal, tanggal_tempo, total, kodeuser) 
+               VALUES (?, ?, ?, ?, ?, ?, ?) 
+               ON DUPLICATE KEY UPDATE total=?`,
+              [
+                currentByrVoucher,
+                jenis === "KAS" ? "CS" : "BT",
+                rek_kode,
+                tgl_bkk,
+                tgl_bkk,
+                totalTerpakai,
+                user.kode,
+                totalTerpakai,
+              ],
+            );
+            vou++;
+          }
+
+          // Insert detail bayar_debet_detail
+          await conn.query(
+            `INSERT INTO kencanaprint.bayar_debet_detail (nomor, vou_nomor, vou_link, nilai) 
+             VALUES (?, ?, ?, ?)`,
+            [currentByrVoucher, d.pjh, nomor, d.total],
+          );
+        }
+
+        // 2. Logika PO External (POE)
+        if (v && cpjh3 === "POE") {
+          await conn.query(
+            `INSERT INTO kencanaprint.tpoexternal_dtl2 
+              (poed2_nomor, poed2_tanggal, poed2_nominal, poed2_akun, poed2_link) 
+             VALUES (?, ?, ?, ?, ?)`,
+            [d.pjh, tgl_bkk, d.total, rek_kode, nomor],
+          );
+        }
+      }
+
+      // Insert jurnal debet per item verified
+      if (v && totalTerpakai !== 0 && noBkk) {
+        const cUraian =
+          `${d.uraian} ${d.spesifikasi || ""} ${d.qty} ${d.satuan || ""}${d.guna ? ` (${d.guna})` : ""}`.trim();
+        const noUrut = d.ga !== 0 ? d.no : nourut - 1;
+
+        await conn.query(
+          `
+          INSERT INTO tjurnalitem
+            (jurd_jur_no, jurd_trs, jurd_nourut, jurd_uraian,
+             jurd_debet, jurd_rek_kode, jurd_cc_kode, jurd_dcnama,
+             jurd_sup_kode, jurd_sup_nama, jurd_bank, jurd_rekening, jurd_atasnama)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+          [
+            noBkk,
+            nomerator,
+            noUrut,
+            cUraian,
+            d.total,
+            d.rekkode || "",
+            d.cckode || 0,
+            d.dcnama || "",
+            d.kdsup || "",
+            d.supplier || "",
+            d.bank || "",
+            d.rekening || "",
+            d.atasnama || "",
+          ],
+        );
+
+        // Simpan BKM otomatis jika account A-111
+        if ((d.rekkode || "").startsWith("A-111")) {
+          autoCounter++;
+          const noBkm = `${String(autoCounter).padStart(2, "0")}${nomor}`;
+          await conn.query(
+            `
+            INSERT INTO tjurnal
+              (jur_no, jur_tanggal, jur_tipetransaksi, jur_cabang,
+               jur_penerima, jur_keterangan, jur_rek_kode,
+               jur_otomatis, date_create, user_create)
+            VALUES (?, ?, 'BKM', ?, ?, ?, ?, 1, NOW(), ?)
+          `,
+            [
+              noBkm,
+              new Date(tgl_bkk).toISOString().slice(0, 10).replace("T", " "),
+              cabang,
+              penerima,
+              `BKM OTOMATIS: ${d.uraian}`,
+              d.rekkode,
+              user.kode,
+            ],
+          );
+          // Debet
+          await conn.query(
+            `
+            INSERT INTO tjurnalitem (jurd_jur_no, jurd_rek_kode, jurd_debet, jurd_uraian)
+            VALUES (?, ?, ?, ?)
+          `,
+            [noBkm, d.rekkode, d.harga, d.uraian],
+          );
+          // Kredit
+          await conn.query(
+            `
+            INSERT INTO tjurnalitem (jurd_jur_no, jurd_trs, jurd_nourut, jurd_uraian, jurd_kredit, jurd_rek_kode)
+            VALUES (?, 'BKM', 1, ?, ?, ?)
+          `,
+            [noBkm, keterangan || "", d.harga, rek_kode],
+          );
+        }
+
+        // Simpan BBM otomatis jika account A-112 atau B-211
+        if (
+          (d.rekkode || "").startsWith("A-112") ||
+          (d.rekkode || "").startsWith("B-211")
+        ) {
+          autoCounter++;
+          const noBbm = `${String(autoCounter).padStart(2, "0")}${nomor}`;
+          await conn.query(
+            `
+            INSERT INTO tjurnal
+              (jur_no, jur_tanggal, jur_tipetransaksi, jur_cabang,
+               jur_penerima, jur_keterangan, jur_rek_kode,
+               jur_otomatis, date_create, user_create)
+            VALUES (?, ?, 'BBM', ?, ?, ?, ?, 1, NOW(), ?)
+          `,
+            [
+              noBbm,
+              tgl_bkk,
+              cabang,
+              penerima,
+              `BBM OTOMATIS: ${d.uraian}`,
+              d.rekkode,
+              user.kode,
+            ],
+          );
+          await conn.query(
+            `
+            INSERT INTO tjurnalitem (jurd_jur_no, jurd_rek_kode, jurd_debet, jurd_uraian)
+            VALUES (?, ?, ?, ?)
+          `,
+            [noBbm, d.rekkode, d.harga, d.uraian],
+          );
+          await conn.query(
+            `
+            INSERT INTO tjurnalitem (jurd_jur_no, jurd_trs, jurd_nourut, jurd_uraian, jurd_kredit, jurd_rek_kode)
+            VALUES (?, 'BBM', 1, ?, ?, ?)
+          `,
+            [noBbm, keterangan || "", d.harga, rek_kode],
+          );
+        }
+      }
+
+      if (d.ga === 0) {
+      } // nourut sudah di-increment di atas
+    }
+
+    await conn.commit();
+    return { nomor, no_bkk: noBkk };
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
+  }
+};
+
+// ── Get single account by kode ────────────────────────────────────────
+const getAccountByKode = async (kode) => {
+  const [[row]] = await db.query(
+    `SELECT rek_kode AS kode, rek_nama AS nama, rek_cabang AS cabang
+     FROM trekening WHERE rek_kode = ? AND rek_isaktif = 0`,
+    [kode],
+  );
+  return row || null;
+};
+
+// ── Lookup cost center ────────────────────────────────────────────────
+const getCostCenterOptions = async () => {
+  const [rows] = await db.query(
+    `SELECT cc_kode AS kode, cc_nama AS nama FROM tcostcenter ORDER BY cc_nama`,
+  );
+  return rows;
+};
+
+const getDcOptions = async (cckode) => {
+  const [rows] = await db.query(
+    `SELECT dc_kode AS kode, dc_nama AS nama FROM tcostcenteritem WHERE dc_kode=? ORDER BY dc_nama`,
+    [cckode],
+  );
+  return rows;
+};
+
+// ── Bantuan F1: Pengajuan GA ──────────────────────────────────────────
+const getListPengajuanGA = async (cabang) => {
+  let sql = `
+    SELECT h.pmt_pjh_nomor AS nomor, DATE_FORMAT(j.pjh_tanggal,"%d-%m-%Y") AS tanggal,
+      j.pjh_ke, j.pjh_user_kode AS nama, h.pmt_keterangan AS keterangan
+    FROM ga2.tpermintaan_hdr h
+    INNER JOIN ga2.tpengajuan2_hdr j ON j.pjh_nomor=h.pmt_pjh_nomor
+    WHERE h.pmt_approval = 0
+  `;
+  const params = [];
+  if (cabang && cabang !== "P01") {
+    sql += ` AND j.pjh_ke = ?`;
+    params.push(cabang);
+  }
+  sql += ` ORDER BY j.pjh_tanggal DESC, h.pmt_pjh_nomor DESC`; // 👈 Ubah ini
+
+  const [rows] = await db.query(sql, params);
+  return rows;
+};
+
+const getDetailPengajuanGA = async (pjhNomor) => {
+  const [rows] = await db.query(
+    `SELECT h.pmt_nomor, d.pmd_nourut, d.pmd_nama, d.pmd_spesifikasi,
+      d.pmd_qty_riil, d.pmd_satuan, d.pmd_qty_buyed, d.pmd_nilai,
+      d.pmd_nilai_buyed, d.pmd_dana_approved, d.pmd_tanggal_reject, d.pmd_bon,
+      d.pmd_kegunaan, (d.pmd_qty_riil * d.pmd_nilai) AS total, d.pmd_verified_buyed,
+      h.pmt_buyed, d.pmd_nilai_terpakai, d.pmd_tanggal_approved, d.pmd_tanggal_buyed,
+      j.pjh_jenis_permintaan, j.pjh_nonga
+    FROM ga2.tpermintaan_dtl d
+    INNER JOIN ga2.tpermintaan_hdr h ON h.pmt_nomor = d.pmd_pmt_nomor
+    LEFT JOIN ga2.tpengajuan2_hdr j ON j.pjh_nomor = h.pmt_pjh_nomor
+    WHERE h.pmt_pjh_nomor = ?
+    ORDER BY d.pmd_nourut`,
+    [pjhNomor],
+  );
+
+  return rows.map((r) => {
+    const isGabrg =
+      (r.pjh_jenis_permintaan || "").toUpperCase() === "PERMINTAAN BARANG" &&
+      Number(r.pjh_nonga) === 0;
+    return {
+      pmt: r.pmt_nomor,
+      no: r.pmd_nourut,
+      pjh: pjhNomor,
+      uraian: r.pmd_nama,
+      spesifikasi: r.pmd_spesifikasi || "",
+      satuan: r.pmd_satuan || "",
+      qty: Number(r.pmd_qty_riil),
+      harga: Number(r.pmd_nilai),
+      total: Number(r.total),
+      guna: r.pmd_kegunaan || "",
+      verified: true,
+      ga: 1, // ← GA = 1
+      cckode: 0,
+      ccnama: "",
+      dcnama: "",
+      rekkode: "",
+      reknama: "",
+      edit: 0,
+      gabrg: isGabrg ? 1 : 0,
+      kdbrg: "",
+      mb: "",
+      jenis_item: "",
+      cab_item: "",
+      kdsup: "",
+      supplier: "",
+      bank: "",
+      rekening: "",
+      atasnama: "",
+      dckode: 0,
+      pjh_link: "",
+    };
+  });
+};
+
+// ── Bantuan F2: PO External ───────────────────────────────────────────
+const getListPoExternal = async () => {
+  const [rows] = await db.query(`
+    SELECT x.Nomor AS nomor, DATE_FORMAT(x.Tanggal, "%d-%m-%Y") AS tanggal, x.SPK AS spk, 
+           x.Nominal AS nominal, x.Supplier AS supplier
+    FROM (
+      SELECT h.poe_nomor AS Nomor, h.poe_tanggal AS Tanggal, h.poe_spk_nomor AS SPK,
+        h.poe_sup AS Kdsup, u.Sup_nama AS Supplier, h.poe_total AS Nominal,
+        (SELECT IFNULL(SUM(c.poed2_nominal),0) FROM kencanaprint.tpoexternal_dtl2 c WHERE c.poed2_nomor=h.poe_nomor) AS DP,
+        (SELECT IFNULL(SUM(v.voud_total),0) FROM kencanaprint.tvoucher_dtl v WHERE v.voud_nota=h.poe_nomor) AS Voucher
+      FROM kencanaprint.tpoexternal_hdr h
+      LEFT JOIN kencanaprint.tsupplier u ON u.Sup_kode = h.poe_sup
+    ) x
+    WHERE (x.Nominal - (x.DP + x.Voucher)) > 0 
+    ORDER BY x.Tanggal DESC, x.Nomor DESC
+  `);
+  return rows.map((r) => ({
+    ...r,
+    nominal: Number(r.nominal),
+  }));
+};
+
+// ── Bantuan F3: Voucher Hutang ────────────────────────────────────────
+const getListVoucher = async () => {
+  const [rows] = await db.query(`
+    SELECT h.vou_nomor AS nomor, DATE_FORMAT(h.vou_tanggal, "%d-%m-%Y") AS tanggal, 
+           s.sup_nama AS supplier, h.vou_total AS total
+    FROM kencanaprint.tvoucher_hdr h
+    INNER JOIN kencanaprint.tsupplier s ON s.sup_kode = h.vou_sup_kode
+    WHERE h.vou_nomor NOT IN (SELECT b.vou_nomor FROM kencanaprint.bayar_debet_detail b)
+    ORDER BY h.vou_tanggal DESC, h.vou_nomor DESC
+  `);
+  return rows.map((r) => ({
+    ...r,
+    total: Number(r.total),
+  }));
+};
+
+// ── Bantuan F4: Permintaan Garmen ─────────────────────────────────────
+const getListPermintaanGarmen = async (cabang) => {
+  let sql = `
+    SELECT h.mb_nomor AS nomor, DATE_FORMAT(h.mb_tanggal, "%d-%m-%Y") AS tanggal, h.mb_jenis AS jenis,
+      h.mb_ket AS keterangan, h.mb_priority AS priority, h.mb_cab AS cab,
+      h.user_create AS usr, h.mb_bagian AS bagian
+    FROM kencanaprint.tgarmenmintabeli_hdr h
+    WHERE h.mb_status <> 'CLOSE' AND h.mb_status <> 'DICLOSE'
+      AND h.mb_nomor NOT IN (SELECT po_mb_nomor FROM kencanaprint.tgarmenpo_hdr p WHERE po_mb_nomor <> '')
+  `;
+  const params = [];
+  if (cabang === "P01") {
+    sql += ` AND (h.mb_mintake = 'HO' OR h.mb_mintake = 'HO-')`;
+  } else if (cabang) {
+    sql += ` AND h.mb_mintake = ?`;
+    params.push(cabang);
+  }
+  sql += ` ORDER BY h.mb_tanggal DESC, h.mb_nomor DESC`; // 👈 Ubah urutan DESC
+
+  const [rows] = await db.query(sql, params);
+  return rows;
+};
+
+const getDetailPermintaanGarmen = async (mbNomor) => {
+  // Sesuai logika Delphi: if(b.brg_note="",concat(b.brg_nama,d.mbd_ket),concat(b.brg_nama," - ",b.brg_note," ",d.mbd_ket))
+  const [rows] = await db.query(
+    `SELECT h.*, d.*, b.brg_satuan,
+      IF(IFNULL(b.brg_note,'') = '', 
+         CONCAT(IFNULL(b.brg_nama,''), ' ', IFNULL(d.mbd_ket,'')), 
+         CONCAT(IFNULL(b.brg_nama,''), ' - ', b.brg_note, ' ', IFNULL(d.mbd_ket,''))
+      ) AS nama
+    FROM kencanaprint.tgarmenmintabeli_dtl d
+    LEFT JOIN kencanaprint.tgarmenmintabeli_hdr h ON h.mb_nomor = d.mbd_nomor
+    LEFT JOIN kencanaprint.tgarmen_brg b ON b.brg_kode = d.mbd_brg_kode
+    WHERE d.mbd_nomor = ?
+    ORDER BY d.mbd_nourut`,
+    [mbNomor],
+  );
+
+  return rows.map((r) => ({
+    pmt: "",
+    no: r.mbd_nourut,
+    pjh: r.mbd_nomor,
+    mb: r.mbd_nomor,
+    uraian: r.nama,
+    spesifikasi: r.mbd_ket || "",
+    satuan: r.brg_satuan || "",
+    qty: Number(r.mbd_jumlah),
+    harga: 0,
+    total: 0,
+    guna: r.mbd_kegunaan || "",
+    verified: true,
+    ga: 0, // ← tambah ini
+    gabrg: 1,
+    kdbrg: r.mbd_brg_kode,
+    jenis_item: r.mb_jenis, // ← rename dari jenis
+    cab_item: r.mb_cab, // ← rename dari cab
+    rekkode: "",
+    reknama: "",
+    cckode: 0,
+    ccnama: "",
+    dcnama: "",
+    kdsup: "",
+    supplier: "",
+    bank: "",
+    rekening: "",
+    atasnama: "",
+    edit: 0,
+    pjh_link: r.mbd_nomor,
+    dckode: 0,
+  }));
+};
+
+// ── Bantuan F5: Invoice Garmen ────────────────────────────────────────
+const getListInvoiceGarmen = async () => {
+  const [rows] = await db.query(`
+    SELECT h.iv_jenis AS jenis, h.iv_nomor AS invoice, DATE_FORMAT(h.iv_tanggal, "%d-%m-%Y") AS tanggal,
+      (SELECT IFNULL(bpb_po_nomor,"") FROM kencanaprint.tgarmenbpb_hdr b WHERE b.bpb_nomor=h.iv_bpb_nomor LIMIT 1) AS nopo,
+      h.iv_bpb_nomor AS nobpb
+    FROM kencanaprint.tgarmeniv_hdr h
+    WHERE h.iv_bbk = ""
+    ORDER BY h.iv_tanggal DESC, h.iv_nomor DESC
+  `); // 👈 Ubah urutan DESC
+  return rows;
+};
+
+const getDetailInvoiceGarmen = async (ivNomor) => {
+  // Sesuai logika Delphi: if(b.brg_note="",b.brg_nama,concat(b.brg_nama," - ",b.brg_note))
+  const [rows] = await db.query(
+    `SELECT h.*, d.*, b.brg_satuan, m.bpb_cab AS cab, s.sup_nama,
+      IF(IFNULL(b.brg_note,'') = '', 
+         b.brg_nama, 
+         CONCAT(IFNULL(b.brg_nama,''), ' - ', b.brg_note)
+      ) AS nama
+    FROM kencanaprint.tgarmeniv_dtl d
+    LEFT JOIN kencanaprint.tgarmeniv_hdr h ON h.iv_nomor = d.ivd_nomor
+    LEFT JOIN kencanaprint.tgarmenbpb_hdr m ON m.bpb_nomor = h.iv_bpb_nomor
+    LEFT JOIN kencanaprint.tgarmen_brg b ON b.brg_kode = d.ivd_brg_kode
+    LEFT JOIN kencanaprint.tsupplier s ON s.sup_kode = h.iv_sup_kode
+    WHERE d.ivd_nomor = ?
+    ORDER BY d.ivd_nourut`,
+    [ivNomor],
+  );
+
+  return rows.map((r) => {
+    const qty = Number(r.ivd_jumlah);
+    const harga = Number(r.ivd_harga);
+    return {
+      mb: "",
+      no: r.ivd_nourut,
+      pjh: r.ivd_nomor,
+      uraian: r.nama,
+      kdbrg: r.ivd_brg_kode,
+      spesifikasi: r.ivd_ket || "",
+      satuan: r.brg_satuan || "",
+      qty,
+      harga,
+      total: qty * harga,
+      guna: r.ivd_kegunaan || "",
+      verified: true,
+      ga: 0, // ← tambah ini
+      gabrg: 1,
+      jenis_item: r.iv_jenis, // ← rename
+      cab_item: r.cab, // ← rename
+      kdsup: r.iv_sup_kode,
+      supplier: r.sup_nama,
+      rekkode: "",
+      reknama: "",
+      cckode: 0,
+      ccnama: "",
+      dcnama: "",
+      bank: "",
+      rekening: "",
+      atasnama: "",
+      edit: 0,
+      pjh_link: r.ivd_nomor,
+      dckode: 0,
+      pmt: "",
+    };
+  });
+};
+
+// ── Generate kode supplier baru: S + 7 digit ──────────────────────────
+const generateSupplierKode = async (conn) => {
+  const [[row]] = await (conn || db).query(
+    'SELECT IFNULL(MAX(RIGHT(sup_kode, 7)), 0) AS max_val FROM kencanaprint.tsupplier WHERE LEFT(sup_kode, 1) = "S"',
+  );
+  const nextNum = parseInt(row.max_val, 10) + 1;
+  return "S" + String(nextNum).padStart(7, "0");
+};
+
+// ── Create supplier baru (dari form Penyelesaian Uang Muka) ───────────
+const createSupplier = async (data, user) => {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const kode = await generateSupplierKode(conn);
+
+    await conn.query(
+      `INSERT INTO kencanaprint.tsupplier (
+        sup_kode, sup_nama, sup_alamat, sup_kota, sup_telp, sup_hp, sup_fax, sup_cp,
+        sup_npwp, sup_nama_npwp, sup_alamat_npwp, sup_kota_npwp, sup_top, sup_targetmitra,
+        sup_ket, sup_bahan, sup_cmt, sup_accesories, sup_obat, sup_sparepart, sup_atk, sup_jasa,
+        sup_aktif, user_create, date_create
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+      [
+        kode,
+        data.Nama,
+        data.Alamat || "",
+        data.Kota || "",
+        data.Telp || "",
+        data.Hp || "",
+        data.Fax || "",
+        data.Contact || "",
+        data.NpwpKode || "",
+        data.NpwpNama || "",
+        data.NpwpAlamat || "",
+        data.NpwpKota || "",
+        data.Top || 0,
+        data.TargetMitra || 0,
+        data.Keterangan || "",
+        data.Jenis?.Bahan ? "Y" : "N",
+        data.Jenis?.Cmt ? "Y" : "N",
+        data.Jenis?.Acc ? "Y" : "N",
+        data.Jenis?.Obat ? "Y" : "N",
+        data.Jenis?.Sparepart ? "Y" : "N",
+        data.Jenis?.Atk ? "Y" : "N",
+        data.Jenis?.Jasa ? "Y" : "N",
+        data.Aktif || "Y",
+        user,
+      ],
+    );
+
+    // Insert rekening (jika ada)
+    if (data.RekeningList && data.RekeningList.length > 0) {
+      const detailVals = data.RekeningList.filter(
+        (r) => r.Rekening && r.Rekening.trim() !== "",
+      ).map((r) => [kode, r.Bank || "", r.Rekening, r.AtasNama || ""]);
+
+      if (detailVals.length > 0) {
+        await conn.query(
+          "INSERT INTO kencanaprint.tsupplieritem (supd_kode, supd_bank, supd_rekening, supd_atasnama) VALUES ?",
+          [detailVals],
+        );
+      }
+    }
+
+    await conn.commit();
+    return kode;
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+};
+
+module.exports = {
+  getFormData,
+  getAccountOptions,
+  saveData,
+  getAccountByKode,
+  getCostCenterOptions,
+  getDcOptions,
+  getListPengajuanGA,
+  getDetailPengajuanGA,
+  getListPoExternal,
+  getListVoucher,
+  getListPermintaanGarmen,
+  getDetailPermintaanGarmen,
+  getListInvoiceGarmen,
+  getDetailInvoiceGarmen,
+  createSupplier,
+};
