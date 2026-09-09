@@ -1,17 +1,13 @@
-const express = require("express");
-const router = express.Router();
+const router = require("express").Router();
 const ctrl = require("../../controllers/transaksi/penjualanController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 
-const menuId = 33; // Set ID Menu khusus untuk Penjualan Kasir
+const menuId = 33;
 
-router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getAllHistory);
-router.get("/detail/:nomor", verifyToken, checkPermission(menuId, "view"), ctrl.getDetailHistory);
-router.get("/init", verifyToken, checkPermission(menuId, "view"), ctrl.getInitData);
-router.post("/save", verifyToken, checkPermission(menuId, "insert"), ctrl.saveData);
-router.get("/customer", verifyToken, checkPermission(menuId, "view"), ctrl.getCustomer);
-router.get("/pending-list", verifyToken, checkPermission(menuId, "view"), ctrl.getPendingList);
-router.post("/pending-save", verifyToken, checkPermission(menuId, "insert"), ctrl.savePending);
-router.post("/pending-take", verifyToken, checkPermission(menuId, "insert"), ctrl.takePending);
+router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getBrowse);
+router.get("/detail/:nomor", verifyToken, checkPermission(menuId, "view"), ctrl.getBrowseDetail);
+router.get("/print/:nomor", verifyToken, checkPermission(menuId, "view"), ctrl.getPrintData);
+router.delete("/:nomor", verifyToken, checkPermission(menuId, "delete"), ctrl.deleteData);
+router.patch("/:nomor/status", verifyToken, checkPermission(menuId, "update"), ctrl.updateStatus);
 
 module.exports = router;

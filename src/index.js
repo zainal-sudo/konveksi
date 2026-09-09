@@ -32,6 +32,7 @@ const returRoutes     = require("./routes/transaksi/returRoutes");
 const returFormRoutes = require("./routes/transaksi/returFormRoutes");
 const bayarSupplierRoutes = require("./routes/transaksi/bayarSupplierRoutes");
 const penjualanRoutes = require("./routes/transaksi/penjualanRoutes");
+const penjualanFormRoutes = require("./routes/transaksi/penjualanFormRoutes");
 
 const stbjRoutes = require("./routes/transaksi/stbjRoutes");
 const stbjFormRoutes = require("./routes/transaksi/stbjFormRoutes");
@@ -105,7 +106,7 @@ app.use("/api/transaksi/retur",       returRoutes);
 app.use("/api/transaksi/retur/form",  returFormRoutes);
 app.use("/api/transaksi/bayarSupplier", bayarSupplierRoutes);
 app.use("/api/transaksi/penjualan", penjualanRoutes);
-app.use("/api/transaksi/penjualan/form", penjualanRoutes);
+app.use("/api/transaksi/penjualan/form", penjualanFormRoutes);
 
 app.use("/api/transaksi/invoice", invRoutes);
 app.use("/api/transaksi/invoice/form", invFormRoutes);

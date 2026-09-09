@@ -39,7 +39,8 @@ const getBrowseDetail = async (nomor) => {
        d.pod_qty                   AS qty,
        d.pod_harga                 AS harga,
        d.pod_discpr                AS discPr,
-       IFNULL(d.pod_qty_terima, 0) AS QtyTerima
+       IFNULL(d.pod_qty_terima, 0) AS QtyTerima,
+	   (d.pod_qty*(d.pod_harga*(100-d.pod_discpr )/100)) AS Subtotal
      FROM tpo_dtl d
      LEFT JOIN tbarang b ON TRIM(d.pod_brg_kode) = TRIM(b.brg_kode)
      WHERE TRIM(d.pod_po_nomor) = TRIM(?)
