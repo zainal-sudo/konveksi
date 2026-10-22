@@ -19,7 +19,21 @@ const db = require("../../config/database");
  *    selalu otomatis sinkron — hindari salah hitung ? secara manual.
  */
 
-const SELECT_BASE = `
+// Ekspresi stok default: kolom brg_stok
+const STOK_KOLOM = "b.brg_stok AS stok";
+
+// Ekspresi stok dari kartu stok tmasterstok (gudang dihitung milik satu cabang;
+// dipakai untuk login pusat supaya tidak selisih dengan brg_stok yang bisa
+// meleset karena hapus manual langsung di DB (tanpa lewat trigger))
+const stokDariKartu = (cabangKode) => `
+  IFNULL((SELECT SUM(m.mst_stok_in - m.mst_stok_out)
+            FROM tmasterstok m
+            INNER JOIN tgudang gu ON gu.gdg_kode = m.mst_gdg_kode
+           WHERE m.mst_brg_kode = b.brg_kode
+             AND IFNULL(gu.gdg_cbg_kode, '00') = ?
+         ), 0) AS stok`;
+
+const selectBase = (stokSql) => `
   SELECT
     b.brg_kode           AS kode,
     b.brg_nama            AS nama,
@@ -34,7 +48,7 @@ const SELECT_BASE = `
     gd.gdg_nama           AS gdgNama,
     b.brg_isstok          AS isStok,
     b.brg_isexpired       AS isExpired,
-    b.brg_stok            AS stok,
+    ${stokSql || STOK_KOLOM},
     b.brg_hrgbeli         AS hrgBeli,
     b.brg_hrgjual         AS hrgJual,
     b.brg_MIN_STOK        AS minStok,
@@ -65,9 +79,16 @@ const SELECT_BASE = `
   LEFT JOIN tsupplier s  ON TRIM(s.Sup_kode) = TRIM(b.brg_sup_kode)
 `;
 
+const SELECT_BASE = selectBase(STOK_KOLOM);
+
+// Stok pusat dihitung dari kartu stok (gudang milik cabang '00')
+const isPusat = (cabangKode) => String(cabangKode || "00") === "00";
+
 const getAll = async (filter = {}) => {
   const where = [];
   const params = [];
+  const cabangKode = String(filter.cabang || "00");
+  const pakaiKartu = isPusat(cabangKode);
 
   if (filter.search) {
     where.push(`(b.brg_nama LIKE ? OR b.brg_kode = ? OR b.brg_kodelama LIKE ?)`);
@@ -86,17 +107,27 @@ const getAll = async (filter = {}) => {
     params.push(Number(filter.isAktif));
   }
 
+  const base = pakaiKartu ? selectBase(stokDariKartu(cabangKode)) : SELECT_BASE;
+
   const sql = `
-    ${SELECT_BASE}
+    ${base}
     ${where.length ? "WHERE " + where.join(" AND ") : ""}
     ORDER BY b.brg_kode DESC
   `;
-  const [rows] = await db.query(sql, params);
+  // placeholder stok-kartu (jika ada) diletakkan sebelum param WHERE
+  const [rows] = await db.query(sql, pakaiKartu ? [cabangKode, ...params] : params);
   return rows;
 };
 
-const getById = async (kode) => {
-  const [[row]] = await db.query(`${SELECT_BASE} WHERE b.brg_kode = ?`, [kode]);
+const getById = async (kode, cabangKode) => {
+  const pakaiKartu = isPusat(cabangKode);
+  const base = pakaiKartu
+    ? selectBase(stokDariKartu(String(cabangKode || "00")))
+    : SELECT_BASE;
+  const [[row]] = await db.query(
+    `${base} WHERE b.brg_kode = ?`,
+    pakaiKartu ? [String(cabangKode || "00"), kode] : [kode]
+  );
   if (!row) throw new Error("Barang tidak ditemukan.");
   return row;
 };

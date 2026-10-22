@@ -12,4 +12,13 @@ const getSummary = async (req, res) => {
   }
 };
 
-module.exports = { getSummary };
+const getSales = async (req, res) => {
+  try {
+    const data = await svc.getSales(req.user, req.query.cabang);
+    res.json({ success: true, data });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+};
+
+module.exports = { getSummary, getSales };

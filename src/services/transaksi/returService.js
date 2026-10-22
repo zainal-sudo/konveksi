@@ -1,4 +1,5 @@
 const db = require("../../config/database");
+const { deleteAutoJurnalRetur } = require("../../utils/jurnalRetur");
 
 const getBrowse = async (startDate, endDate) => {
   const [rows] = await db.query(
@@ -56,6 +57,10 @@ const deleteData = async (nomor) => {
   try {
     await conn.query(`DELETE FROM tret_dtl WHERE retd_ret_nomor = ?`, [nomor]);
     await conn.query(`DELETE FROM tret_hdr WHERE ret_nomor = ?`, [nomor]);
+
+    // Jurnal otomatis retur ikut dihapus (nomor jurnal = nomor retur)
+    await deleteAutoJurnalRetur(conn, nomor);
+
     await conn.commit();
   } catch (e) {
     await conn.rollback();

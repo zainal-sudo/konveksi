@@ -1,5 +1,64 @@
 const db = require("../../config/database");
 const { acquireLock, releaseLock } = require("../../utils/nomorLock");
+const { createAutoJurnalPenjualan } = require("../../utils/jurnalPenjualan");
+const { getHppBarang } = require("../../utils/jurnalMutasiCabang");
+
+// ── Gudang penjualan sesuai cabang login ────────────────────────────────
+// Utama: gudang produk jadi milik cabang (GJ-01 pusat, GJ-02 AA, GJ-03 CC);
+// fallback gudang pertama milik cabang tsb.
+const getGudangPenjualan = async (conn, cabangKode) => {
+  const [[g]] = await conn.query(
+    `SELECT gdg_kode FROM tgudang
+      WHERE gdg_cbg_kode = ?
+      ORDER BY (gdg_nama LIKE '%Jadi%') DESC, gdg_kode
+      LIMIT 1`,
+    [String(cabangKode || "00")]
+  );
+  return g?.gdg_kode || null;
+};
+
+// ── Kartu stok: pengurangan stok penjualan langsung di gudang cabang ────
+// Diboldkarkan dulu per nomor SO supaya idempotent (aman untuk edit/save ulang).
+const simpanKartuStokPenjualan = async (conn, { nomor, gudang, tanggal, detail, user }) => {
+  await conn.query(`DELETE FROM tmasterstok WHERE mst_noreferensi = ?`, [nomor]);
+  if (!gudang) throw new Error("Gudang penjualan untuk cabang ini tidak ditemukan.");
+
+  // Aggregate permintaan per barang + cek stok tersedia
+  const permintaan = new Map();
+  for (const item of detail) {
+    const qty = Number(item.qty) || 0;
+    if (qty <= 0) continue;
+    permintaan.set(item.brgKode, (permintaan.get(item.brgKode) || 0) + qty);
+  }
+  const stokTersedia = new Map();
+  for (const [brgKode, qty] of permintaan) {
+    const [[st]] = await conn.query(
+      `SELECT IFNULL(SUM(mst_stok_in - mst_stok_out), 0) AS total
+         FROM tmasterstok WHERE mst_brg_kode = ? AND mst_gdg_kode = ?`,
+      [brgKode, gudang]
+    );
+    const tersedia = Number(st?.total) || 0;
+    stokTersedia.set(brgKode, tersedia);
+    if (qty > tersedia) {
+      throw new Error(
+        `Stok barang (${brgKode}) di gudang ${gudang} tidak cukup: tersedia ${tersedia}, diminta ${qty}.`
+      );
+    }
+  }
+
+  for (const item of detail) {
+    const qty = Number(item.qty) || 0;
+    if (qty <= 0) continue;
+    const hpp = await getHppBarang(conn, item.brgKode, gudang);
+    await conn.query(
+      `INSERT INTO tmasterstok
+         (mst_brg_kode, mst_gdg_kode, mst_stok_in, mst_stok_out,
+          mst_expired_date, mst_hargabeli, mst_noreferensi, mst_tanggal, mst_avgcost)
+       VALUES (?, ?, 0, ?, '0000-00-00', ?, ?, ?, ?)`,
+      [item.brgKode, gudang, qty, hpp, nomor, tanggal, hpp]
+    );
+  }
+};
 
 const getCustomerOptions = async (search = "") => {
   const [rows] = await db.query(
@@ -19,7 +78,8 @@ const getBarangOptions = async (search = "") => {
         brg_kode      AS barcode,
         brg_nama      AS nama,
         brg_satuan    AS satuan,
-        brg_hrgjual   AS hrgJual
+        brg_hrgjual   AS hrgJual,
+        brg_hrgbeli   AS hrgBeli
      FROM tbarang
      WHERE brg_nama LIKE ? OR brg_kode LIKE ?
      LIMIT 20`,
@@ -38,6 +98,11 @@ const getDetailForm = async (nomor) => {
             (SELECT c.cus_top FROM tcustomer c WHERE c.cus_kode = so_cus_kode) AS cusTop,
             so_memo AS memo, so_istax AS isTax, so_disc_fakturpr AS discFakturPr, so_disc_faktur AS discFaktur,
             so_amount AS amount, so_taxamount AS taxAmount,
+            IFNULL(so_ongkir, 0) AS ongkir, IFNULL(so_bayar, 0) AS bayar, IFNULL(so_kembali, 0) AS kembali,
+            IFNULL(so_dp, 0) AS dp,
+            IFNULL(so_voucher, 0) AS voucher, IFNULL(so_no_voucher, '') AS noVoucher,
+            IFNULL(so_card, 0) AS card, IFNULL(so_no_card, '') AS noCard, IFNULL(so_bank_card, '') AS bankCard,
+            IFNULL(so_piutang, 0) AS piutang,
             DATE_FORMAT(so_dateline, '%Y-%m-%d') AS dateline, so_pemesan AS pemesan
      FROM tso_hdr WHERE so_nomor = ?`,
     [nomor]
@@ -74,6 +139,14 @@ const saveData = async (payload, user) => {
       discFaktur,
       amount,
       taxAmount,
+      ongkir,
+      bayar,
+      voucher,
+      noVoucher,
+      card,
+      noCard,
+      bankCard,
+      piutang,
       dateline,
       pemesan,
       detail,
@@ -85,6 +158,38 @@ const saveData = async (payload, user) => {
     if (!cusKode) throw new Error("Customer harus dipilih.");
     if (!Array.isArray(detail) || detail.length === 0) {
       throw new Error("Detail barang tidak boleh kosong.");
+    }
+
+    // ── Pembayaran multi-jenis (pola kasir minimarket) ─────────────────
+    // Jalur: cash (bayar) + voucher + card + piutang. Total semua jalur
+    // harus >= grand total (amount + ongkir). Kembalian & kas neto dihitung
+    // ulang di server supaya konsisten.
+    const ongkirVal = Number(ongkir) || 0;
+    const grandTotal = (Number(amount) || 0) + ongkirVal;
+    const bayarVal = Number(bayar) || 0; // cash/tunai
+    const voucherVal = Number(voucher) || 0;
+    const cardVal = Number(card) || 0;
+    const piutangVal = Number(piutang) || 0;
+    const totalBayar = bayarVal + voucherVal + cardVal + piutangVal;
+    if (totalBayar < grandTotal) {
+      throw new Error(
+        `Total pembayaran (${totalBayar.toLocaleString("id-ID")}) kurang dari total tagihan (${grandTotal.toLocaleString("id-ID")}).`
+      );
+    }
+    const kembaliVal = Math.max(0, Math.round(totalBayar - grandTotal));
+    // Kas tunai yang benar-benar masuk laci = cash - kembalian
+    const dpVal = Math.max(0, Math.round(bayarVal - kembaliVal));
+
+    // Piutang/bon tidak boleh untuk customer UMUM (tidak bisa ditagih)
+    if (piutangVal > 0) {
+      const [[cus]] = await conn.query(
+        `SELECT cus_nama FROM tcustomer WHERE cus_kode = ?`,
+        [cusKode]
+      );
+      const nama = String(cus?.cus_nama || "").toLowerCase();
+      if (cusKode === "PU" || nama.includes("umum")) {
+        throw new Error("Penjualan PIUTANG tidak boleh untuk customer UMUM. Pilih customer terlebih dahulu.");
+      }
     }
 
     if (isEdit) {
@@ -99,7 +204,9 @@ const saveData = async (payload, user) => {
       await conn.query(`DELETE FROM tso_dtl WHERE sod_so_nomor = ?`, [actualNomor]);
       await conn.query(
         `UPDATE tso_hdr SET so_tanggal=?, so_cus_kode=?, so_memo=?, so_istax=?, so_disc_fakturpr=?, so_disc_faktur=?,
-                            so_amount=?, so_taxamount=?, date_modified=?, user_modified=?, so_dateline=?, so_pemesan=?
+                            so_amount=?, so_taxamount=?, so_ongkir=?, so_bayar=?, so_kembali=?, so_dp=?,
+                            so_voucher=?, so_no_voucher=?, so_card=?, so_no_card=?, so_bank_card=?, so_piutang=?,
+                            date_modified=?, user_modified=?, so_dateline=?, so_pemesan=?
          WHERE so_nomor=?`,
         [
           tanggal,
@@ -110,6 +217,16 @@ const saveData = async (payload, user) => {
           discFaktur || 0,
           amount,
           taxAmount,
+          ongkirVal,
+          bayarVal,
+          kembaliVal,
+          dpVal,
+          voucherVal,
+          noVoucher || "",
+          cardVal,
+          noCard || "",
+          bankCard || "",
+          piutangVal,
           now,
           username,
           dateline || null,
@@ -121,12 +238,16 @@ const saveData = async (payload, user) => {
       const d = new Date(tanggal);
       const yy = String(d.getFullYear()).slice(2);
       const mm = String(d.getMonth() + 1).padStart(2, "0");
-      const prefix = `SO.${yy}${mm}.`;
+      // Nomor penjualan membawa kode cabang login: SO{cbg}.yymm.nnnn
+      // (contoh: SO.2610.0001 untuk pusat, SO01.2610.0001 untuk cabang 01).
+      const cabangKode = String(user?.cabang || "00");
+      const suffixCabang = cabangKode !== "00" ? String(Number(cabangKode)) : "";
+      const prefix = `SO${suffixCabang}.${yy}${mm}.`;
       const isPajak = Number(isTax) > 0;
       const rangeStart = isPajak ? 1 : 5001;
       const rangeEnd = isPajak ? 4999 : 9999;
 
-      lockKey = `nomor_so_${yy}${mm}_${isPajak ? "pjk" : "nonpjk"}`;
+      lockKey = `nomor_so_${cabangKode}_${yy}${mm}_${isPajak ? "pjk" : "nonpjk"}`;
       await acquireLock(conn, lockKey);
 
       const [[maxRow]] = await conn.query(
@@ -148,8 +269,10 @@ const saveData = async (payload, user) => {
 
       await conn.query(
         `INSERT INTO tso_hdr (so_nomor, so_tanggal, so_cus_kode, so_memo, so_istax, so_disc_fakturpr, so_disc_faktur,
-                               so_amount, so_taxamount, date_create, user_create, so_dateline, so_pemesan, so_user_kasir)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                               so_amount, so_taxamount, so_ongkir, so_bayar, so_kembali, so_dp,
+                               so_voucher, so_no_voucher, so_card, so_no_card, so_bank_card, so_piutang,
+                               date_create, user_create, so_dateline, so_pemesan, so_user_kasir)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           actualNomor,
           tanggal,
@@ -160,6 +283,16 @@ const saveData = async (payload, user) => {
           discFaktur || 0,
           amount,
           taxAmount,
+          ongkirVal,
+          bayarVal,
+          kembaliVal,
+          dpVal,
+          voucherVal,
+          noVoucher || "",
+          cardVal,
+          noCard || "",
+          bankCard || "",
+          piutangVal,
           now,
           username,
           dateline || null,
@@ -188,6 +321,19 @@ const saveData = async (payload, user) => {
       );
       index++;
     }
+
+    // ── Kartu stok: pengurangan stok penjualan langsung (idempotent per nomor) ──
+    const gudangPenjualan = await getGudangPenjualan(conn, user?.cabang);
+    await simpanKartuStokPenjualan(conn, {
+      nomor: actualNomor,
+      gudang: gudangPenjualan,
+      tanggal,
+      detail,
+      user: username,
+    });
+
+    // ── Jurnal otomatis penjualan (nomor = nomor SO) ───────────────────
+    await createAutoJurnalPenjualan(conn, { nomor: actualNomor, user: username, cabang: user?.cabang });
 
     await conn.commit();
     return { nomor: actualNomor };

@@ -1,5 +1,9 @@
 const db = require("../../config/database");
 const { acquireLock, releaseLock } = require("../../utils/nomorLock");
+const {
+  createAutoJurnalPembayaran,
+  deleteAutoJurnalPembayaran,
+} = require("../../utils/jurnalBayar");
 
 // 0. Lookup Supplier & Rekening milik modul Bayar Supplier sendiri.
 // PENTING: sebelumnya form ini memakai returFormApi (modul Retur, menuId 16)
@@ -138,6 +142,10 @@ const deleteTransaksi = async (nomorBukti) => {
     await connection.query(`DELETE FROM tbayarsup_dtl WHERE bysd_bys_nomor = ?`, [nomorBukti]);
     await connection.query(`DELETE FROM tbayarsup_hdr WHERE bys_nomor = ?`, [nomorBukti]);
 
+    // Jurnal nota ini dibuat oleh service (bukan trigger DB), jadi ikut
+    // dihapus di sini supaya tidak yatim. Nomor jurnal = nomor nota.
+    await deleteAutoJurnalPembayaran(connection, nomorBukti);
+
     await connection.commit();
     return true;
   } catch (e) {
@@ -191,9 +199,8 @@ const saveData = async (payload) => {
         [nomorBukti]
       );
 
-      // UPDATE header ini akan memicu trigger tbayarsup_hdr_after_update,
-      // yang otomatis hapus+buat ulang jurnal (pakai bys_tglcair kalau
-      // bys_nogiro terisi, atau bys_tanggal kalau tidak).
+      // Jurnal nota lama dihapus + dibuat ulang di bawah (createAutoJurnalPembayaran
+      // idempotent: hapus dulu, lalu regenerasi) -- bukan lagi oleh trigger.
       await conn.query(
         `UPDATE tbayarsup_hdr
          SET bys_tanggal=?, bys_rek_kode=?, bys_nogiro=?, bys_tglcair=?,
@@ -213,8 +220,8 @@ const saveData = async (payload) => {
       );
     } else {
       // ── INSERT baru ────────────────────────────────────────────
-      // Trigger tbayarsup_hdr_after_insert otomatis membuat jurnal
-      // begitu baris ini masuk.
+      // Jurnal dibuat di akhir transaksi oleh createAutoJurnalPembayaran
+      // (trigger jurnalnya sudah dinonaktifkan/dihapus).
       await conn.query(
         `INSERT INTO tbayarsup_hdr
            (bys_nomor, bys_tanggal, bys_sup_kode, bys_rek_kode, bys_nogiro, bys_tglcair,
@@ -275,6 +282,23 @@ const saveData = async (payload) => {
         [nomorBukti, dt.invoiceNomor, dt.nilaiBayar]
       );
     }
+
+    // ── Jurnal otomatis (pindahan dari trigger tbayarsup_hdr_after_insert) ─
+    // Trigger hdr-nya sudah dihapus, penjurnalan sekarang dari sini supaya
+    // dapat diuji & dibersihkan lewat service (lihat src/utils/jurnalBayar.js).
+    const [[supNamaRow]] = await conn.query(
+      `SELECT sup_nama FROM tsupplier WHERE sup_kode = ?`,
+      [header.supKode]
+    );
+    await createAutoJurnalPembayaran(conn, {
+      nomor: nomorBukti,
+      tanggal: header.tanggal,
+      rekKode: header.rekKode,
+      total: totalBayar,
+      noGiro,
+      tglCair,
+      supNama: supNamaRow ? supNamaRow.sup_nama : "",
+    });
 
     await conn.commit();
     return { nomor: nomorBukti };

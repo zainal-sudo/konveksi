@@ -9,7 +9,8 @@ const jwt = require("jsonwebtoken");
  */
 const login = async (username, password) => {
   const [rows] = await db.query(
-    `SELECT user_kode, user_nama, user_password
+    `SELECT user_kode, user_nama, user_password,
+            IFNULL(user_cabang, '00') AS user_cabang
       FROM tuser
     WHERE UPPER(user_kode) = UPPER(?) LIMIT 1`,
     [username],
@@ -27,7 +28,7 @@ const login = async (username, password) => {
     kode: user.user_kode,
     nama: user.user_nama,
     level: "USER", // tidak ada kolom level, default USER
-    cabang: "", // tabel tuser tidak punya kolom cabang
+    cabang: user.user_cabang || "00", // '00' = pusat
   };
 
   const token = jwt.sign(payload, process.env.JWT_SECRET, {
@@ -55,6 +56,10 @@ const login = async (username, password) => {
   return { token, user: { ...payload, menus } };
 };
 
+// '00' = pusat (akses penuh); user cabang hanya menu penjualan & mutasi
+const getCabangUser = (user) => user?.cabang || "00";
+const isPusat = (user) => getCabangUser(user) === "00";
+
 const changePassword = async (userKode, oldPassword, newPassword) => {
   // Cek password lama
   const [[user]] = await db.query(
@@ -78,4 +83,4 @@ const changePassword = async (userKode, oldPassword, newPassword) => {
   return { success: true };
 };
 
-module.exports = { login, changePassword };
+module.exports = { login, changePassword, getCabangUser, isPusat };

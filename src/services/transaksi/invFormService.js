@@ -1,5 +1,7 @@
 const db = require("../../config/database");
 const { acquireLock, releaseLock } = require("../../utils/nomorLock");
+const { createAutoJurnalInv } = require("../../utils/jurnalInv");
+const { cekTutupPeriode } = require("../tutupBukuService");
 
 const getBpbOptions = async (search = "", includeNomor = null) => {
   const [rows] = await db.query(
@@ -155,7 +157,11 @@ const computeTotals = (detail, discFakturPr, discFaktur, isTax) => {
     }
   }
 
-  return { amount: Math.round(amount), taxAmount: Math.round(taxAmount) };
+  return {
+    amount: Math.round(amount),
+    taxAmount: Math.round(taxAmount),
+    discTotal: Math.round(totalDiskonFaktur),
+  };
 };
 
 const saveData = async (payload, user) => {
@@ -172,6 +178,11 @@ const saveData = async (payload, user) => {
     if (!Array.isArray(detail) || detail.length === 0) {
       throw new Error("Detail barang tidak boleh kosong.");
     }
+
+    // Jurnal otomatis akan dibuat dengan tanggal invoice ini —
+    // blokir kalau periode sudah ditutup (konsisten dengan jurnal lain).
+    const tutup = await cekTutupPeriode(tanggal);
+    if (tutup) throw new Error("Periode sudah ditutup. Tidak bisa menyimpan faktur.");
 
     // Ambil fallback dari token/user jika payload cabang kosong
     const activeCabang = cabang || user?.cabang || "";
@@ -191,7 +202,7 @@ const saveData = async (payload, user) => {
       ? Number(payload.discFaktur)
       : (poTax.discFaktur || 0);
 
-    const { amount, taxAmount } = computeTotals(detail, discFakturPr, discFaktur, isTax);
+    const { amount, taxAmount, discTotal } = computeTotals(detail, discFakturPr, discFaktur, isTax);
 
     const now = new Date();
     const username = user?.username || "ADMIN";
@@ -285,6 +296,30 @@ const saveData = async (payload, user) => {
       `UPDATE tbpb_hdr SET bpb_isinvoice = 1 WHERE bpb_nomor = ?`,
       [bpbNomor]
     );
+
+    // ── Jurnal otomatis invoice ──────────────────────────────────────
+    // Dr Persediaan (per jenis barang) + Dr PPN Masukan
+    //   vs Cr Pot. Pembelian + Cr Hutang Dagang
+    // Nomor jurnal = nomor invoice (idempotent, regenerasi saat edit).
+    const [[supRow]] = await conn.query(
+      `SELECT s.sup_nama AS supNama
+         FROM tbpb_hdr h
+         LEFT JOIN tpo_hdr p ON h.bpb_po_nomor = p.po_nomor
+         LEFT JOIN tsupplier s ON p.po_sup_kode = s.sup_kode
+        WHERE h.bpb_nomor = ?`,
+      [bpbNomor]
+    );
+    await createAutoJurnalInv(conn, {
+      nomor: actualNomor,
+      tanggal,
+      isTax,
+      taxAmount,
+      discTotal,
+      amount,
+      detail,
+      supNama: supRow?.supNama || "",
+      user: username,
+    });
 
     await conn.commit();
     return { nomor: actualNomor };

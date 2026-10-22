@@ -5,6 +5,7 @@ const { verifyToken, checkPermission } = require("../../middleware/authMiddlewar
 
 const menuId = 16; // Pastikan ID ini terdaftar di tabel menu Abang
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getAll);
+router.get("/cabang", verifyToken, ctrl.getCabang);
 router.post("/save", verifyToken, checkPermission(menuId, "insert"), ctrl.saveData);
 router.delete("/:kode", verifyToken, checkPermission(menuId, "delete"), ctrl.deleteData);
 

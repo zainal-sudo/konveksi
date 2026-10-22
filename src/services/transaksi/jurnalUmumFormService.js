@@ -4,8 +4,8 @@ const { cekTutupPeriode } = require("../tutupBukuService");
 // ── Account detail (semua aktif) ──────────────────────────────────────
 const getAccountAll = async () => {
   const [rows] = await db.query(
-    `SELECT rek_kode AS kode, rek_nama AS nama, rek_cabang AS cabang
-     FROM trekening WHERE rek_isaktif = 0 ORDER BY rek_kode`,
+    `SELECT rek_kode AS kode, rek_nama AS nama
+     FROM trekening ORDER BY rek_kode`,
   );
   return rows;
 };
@@ -46,7 +46,7 @@ const getDetailForm = async (nomor) => {
     SELECT h.jur_no, DATE_FORMAT(h.jur_tanggal,'%Y-%m-%d') AS jur_tanggal,
       h.jur_keterangan,
       d.jurd_nourut, d.jurd_rek_kode AS det_rek_kode,
-      d.jurd_uraian, d.jurd_debet, d.jurd_kredit,
+      d.jurd_keterangan AS jurd_uraian, d.jurd_debet, d.jurd_kredit,
       r.rek_nama AS det_reknama,
       d.jurd_cc_kode, c.cc_nama,
       d.jurd_dcnama
@@ -142,7 +142,7 @@ const saveData = async (payload, user) => {
       await conn.query(
         `
         INSERT INTO tjurnalitem
-            (jurd_jur_no, jurd_trs, jurd_nourut, jurd_uraian,
+            (jurd_jur_no, jurd_trs, jurd_nourut, jurd_keterangan,
             jurd_debet, jurd_kredit,
             jurd_rek_kode, jurd_cc_kode, jurd_dcnama)
         VALUES (?, 'JUR', ?, ?, ?, ?, ?, ?, ?)

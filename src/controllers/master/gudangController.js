@@ -8,6 +8,14 @@ const getAll = async (req, res) => {
   }
 };
 
+const getCabang = async (req, res) => {
+  try {
+    res.json({ success: true, data: await svc.getCabang() });
+  } catch (e) {
+    res.status(500).json({ success: false, message: e.message });
+  }
+};
+
 const saveData = async (req, res) => {
   try {
     res.json({ success: true, data: await svc.saveData(req.body), message: "Berhasil disimpan." });
@@ -25,4 +33,4 @@ const deleteData = async (req, res) => {
   }
 };
 
-module.exports = { getAll, saveData, deleteData };
+module.exports = { getAll, getCabang, saveData, deleteData };

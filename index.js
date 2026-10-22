@@ -52,9 +52,18 @@ const penyesuaianStokFormRoutes = require("./routes/transaksi/penyesuaianStokFor
 const pembayaranCustomerRoutes = require("./routes/posting/pembayaranCustomerRoutes");
 const pembayaranCustomerFormRoutes = require("./routes/posting/pembayaranCustomerFormRoutes");
 
+// ── Accounting Routes ──
+const accountingJurnalUmumRoutes = require("./routes/accounting/jurnalUmumRoutes");
+const accountingJurnalUmumFormRoutes = require("./routes/accounting/jurnalUmumFormRoutes");
+const accountingPembayaranLainRoutes = require("./routes/accounting/pembayaranLainRoutes");
+const accountingPembayaranLainFormRoutes = require("./routes/accounting/pembayaranLainFormRoutes");
+const accountingPenerimaanLainRoutes = require("./routes/accounting/penerimaanLainRoutes");
+const accountingPenerimaanLainFormRoutes = require("./routes/accounting/penerimaanLainFormRoutes");
+
 // ── Laporan Routes ──
 const listJurnalRoutes = require("./routes/laporan/listJurnalRoutes");
 const persediaanRoutes = require("./routes/laporan/persediaanRoutes");
+const penjualanItemRoutes = require("./routes/laporan/penjualanItemRoutes");
 
 
 const app = express();
@@ -127,9 +136,19 @@ app.use("/api/transaksi/penyesuaian-stok/form", penyesuaianStokFormRoutes);
 app.use("/api/posting/pembayaran-customer", pembayaranCustomerRoutes);
 app.use("/api/posting/pembayaran-customer/form", pembayaranCustomerFormRoutes);
 
+// ── Accounting Routes ──
+app.use("/api/accounting/jurnal-umum", accountingJurnalUmumRoutes);
+app.use("/api/accounting/jurnal-umum/form", accountingJurnalUmumFormRoutes);
+app.use("/api/accounting/pembayaran-lain", accountingPembayaranLainRoutes);
+app.use("/api/accounting/pembayaran-lain/form", accountingPembayaranLainFormRoutes);
+app.use("/api/accounting/penerimaan-lain", accountingPenerimaanLainRoutes);
+app.use("/api/accounting/penerimaan-lain/form", accountingPenerimaanLainFormRoutes);
+
 // ── Laporan Routes ──
 app.use("/api/laporan/list-jurnal", listJurnalRoutes);
 app.use("/api/laporan/persediaan", persediaanRoutes);
+app.use("/api/laporan/penjualanitem", penjualanItemRoutes);
+app.use("/api/laporan/akunting", require("./routes/laporan/neracaLabRugiRoutes"));
 
 // ── Health check ──
 app.get("/api/health", (req, res) => {

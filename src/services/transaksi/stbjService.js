@@ -1,4 +1,5 @@
 const db = require("../../config/database");
+const { deleteAutoJurnalStbj } = require("../../utils/jurnalStbj");
 
 const getBrowse = async (startDate, endDate) => {
   const [rows] = await db.query(
@@ -42,9 +43,12 @@ const deleteData = async (nomor) => {
   const conn = await db.getConnection();
   await conn.beginTransaction();
   try {
-    // Hapus detail lalu header (tambahkan logika stok/rollback jika diperlukan di sini)
+    // Hapus detail lalu header (trigger DB mengembalikan stok bahan & BJ).
     await conn.query(`DELETE FROM tstbj_dtl WHERE stbjd_stbj_nomor = ?`, [nomor]);
     await conn.query(`DELETE FROM tstbj_hdr WHERE stbj_nomor = ?`, [nomor]);
+
+    // Jurnal otomatis nota ini ikut dihapus (nomor jurnal = nomor STBJ).
+    await deleteAutoJurnalStbj(conn, nomor);
 
     await conn.commit();
   } catch (e) {

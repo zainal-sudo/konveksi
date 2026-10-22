@@ -16,9 +16,8 @@ const getBrowse = async (startDate, endDate) => {
         SELECT SUM(d.jurd_kredit) FROM tjurnalitem d WHERE d.jurd_jur_no = h.jur_no
       ), 0) AS Kredit,
       h.jur_keterangan   AS Keterangan,
-      IF(h.jur_close=0,'Belum','Sudah') AS Closed
+      IF(h.jur_isclosed=0,'Belum','Sudah') AS Closed
     FROM tjurnal h
-    LEFT JOIN trekening r ON r.rek_kode = h.jur_rek_kode
     WHERE h.jur_tipetransaksi = 'JUR'
       AND h.jur_tanggal BETWEEN ? AND ?
     ORDER BY h.jur_no
@@ -36,10 +35,9 @@ const getBrowseDetail = async (startDate, endDate) => {
       d.jurd_jur_no   AS Nomor,
       d.jurd_rek_kode AS Account,
       IFNULL(r.rek_nama,'') AS NamaAccount,
-      d.jurd_dcnama   AS DetailCC,
       d.jurd_debet    AS Debet,
       d.jurd_kredit   AS Kredit,
-      d.jurd_uraian   AS Uraian
+      d.jurd_keterangan   AS Uraian
     FROM tjurnal h
     LEFT JOIN tjurnalitem d ON d.jurd_jur_no = h.jur_no
     LEFT JOIN trekening r ON r.rek_kode = d.jurd_rek_kode
@@ -56,7 +54,7 @@ const getBrowseDetail = async (startDate, endDate) => {
 const deleteData = async (nomor) => {
   const [[jurnal]] = await db.query(
     `
-    SELECT jur_tanggal, jur_close
+    SELECT jur_tanggal, jur_isclosed
     FROM tjurnal WHERE jur_no = ?
   `,
     [nomor],
@@ -65,7 +63,7 @@ const deleteData = async (nomor) => {
   if (!jurnal) throw new Error("Data tidak ditemukan.");
 
   // Delphi: sudah diclose tidak bisa dihapus
-  if (Number(jurnal.jur_close) !== 0)
+  if (Number(jurnal.jur_isclosed) !== 0)
     throw new Error("Transaksi sudah diclose. Tidak bisa dihapus.");
 
   // Cek tutup periode

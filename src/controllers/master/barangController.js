@@ -8,7 +8,8 @@ const rekeningSvc = require("../../services/master/rekeningService");
 const getAll = async (req, res) => {
   try {
     const { search, ktgKode, jenisKode, isAktif } = req.query;
-    res.json({ success: true, data: await svc.getAll({ search, ktgKode, jenisKode, isAktif }) });
+    const cabang = String(req.user?.cabang || "00");
+    res.json({ success: true, data: await svc.getAll({ search, ktgKode, jenisKode, isAktif, cabang }) });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
   }
@@ -16,7 +17,7 @@ const getAll = async (req, res) => {
 
 const getById = async (req, res) => {
   try {
-    res.json({ success: true, data: await svc.getById(req.params.kode) });
+    res.json({ success: true, data: await svc.getById(req.params.kode, String(req.user?.cabang || "00")) });
   } catch (e) {
     res.status(404).json({ success: false, message: e.message });
   }

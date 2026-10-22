@@ -1,13 +1,22 @@
 const db = require("../../config/database");
 const { acquireLock, releaseLock } = require("../../utils/nomorLock");
+const { createAutoJurnalStbj } = require("../../utils/jurnalStbj");
+const { cekTutupPeriode } = require("../tutupBukuService");
 
+// Gudang tujuan STBJ hanya yang milik cabang pusat ('00') — produksi
+// barang jadi tidak boleh masuk stok cabang penjualan.
 const getGudang = async (search = "") => {
   const [rows] = await db.query(
-    `SELECT gdg_kode AS kode, gdg_nama AS nama FROM tgudang WHERE gdg_nama LIKE ? OR gdg_kode LIKE ? LIMIT 20`,
+    `SELECT gdg_kode AS kode, gdg_nama AS nama FROM tgudang
+      WHERE gdg_cbg_kode = '00'
+        AND (gdg_nama LIKE ? OR gdg_kode LIKE ?)
+      LIMIT 20`,
     [`%${search}%`, `%${search}%`]
   );
   return rows;
 };
+
+const GUDANG_HARUS_CABANG = "00"; // pusat
 
 const getBarang = async (search = "") => {
   const [rows] = await db.query(
@@ -54,6 +63,20 @@ const saveData = async (payload, user) => {
     const username = user?.username || "ADMIN";
     let actualNomor = nomor;
 
+    // Periode yang sudah ditutup tidak boleh menerima STBJ (jurnalnya akan
+    // memasuki buku besar).
+    const tutup = await cekTutupPeriode(tanggal);
+    if (tutup) throw new Error(`Periode yang memuat tanggal ${tanggal} sudah ditutup. STBJ tidak bisa disimpan.`);
+
+    // Gudang tujuan wajib milik cabang pusat ('00')
+    const [[gdg]] = await conn.query(
+      `SELECT gdg_cbg_kode FROM tgudang WHERE gdg_kode = ?`, [gdgKode]
+    );
+    if (!gdg) throw new Error(`Gudang ${gdgKode} tidak ditemukan.`);
+    if ((gdg.gdg_cbg_kode || "00") !== GUDANG_HARUS_CABANG) {
+      throw new Error("STBJ hanya boleh menstok barang jadi di gudang cabang pusat ('00' — Pusat).");
+    }
+
     if (isEdit) {
       await conn.query(`DELETE FROM tstbj_dtl WHERE stbjd_stbj_nomor = ?`, [actualNomor]);
       await conn.query(
@@ -96,11 +119,23 @@ const saveData = async (payload, user) => {
 
       await conn.query(
         `INSERT INTO tstbj_dtl
-           (stbjd_stbj_nomor, stbjd_brg_kode, stbjd_jumlah, stbjd_koli, stbjd_keterangan)
-         VALUES (?, ?, ?, ?, ?)`,
+            (stbjd_stbj_nomor, stbjd_brg_kode, stbjd_jumlah, stbjd_koli, stbjd_keterangan)
+          VALUES (?, ?, ?, ?, ?)`,
         [actualNomor, d.brgKode, jumlah, Number(d.koli) || 0, d.keterangan || ""]
       );
     }
+
+    // ── Jurnal otomatis STBJ ──────────────────────────────────────────
+    // Dr Persediaan Barang Jadi (HPP=bahan+biaya produksi)
+    //   vs Cr Persediaan Bahan + Cr Biaya Produksi (23.001)
+    // Nomor jurnal = nomor STBJ (idempotent, regenerasi saat edit).
+    // Trigger DB sudah mengurus stoknya; jurnal memakai nilai stok yang sama.
+    await createAutoJurnalStbj(conn, {
+      nomor: actualNomor,
+      tanggal,
+      keterangan: memo ? `Produksi Barang Jadi - ${memo}` : `Produksi Barang Jadi ${actualNomor}`,
+      user: username,
+    });
 
     await conn.commit();
     return { nomor: actualNomor };

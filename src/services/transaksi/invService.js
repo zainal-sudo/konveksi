@@ -1,4 +1,5 @@
 const db = require("../../config/database");
+const { deleteAutoJurnalInv } = require("../../utils/jurnalInv");
 
 // CATATAN: fungsi updateStatusBayar (tandai lunas manual) SENGAJA dihapus.
 // Status lunas (inv_isbayar) & sisa hutang (inv_bayar) SEHARUSNYA hanya
@@ -83,6 +84,9 @@ const deleteData = async (nomor) => {
         [rec.inv_bpb_nomor]
       );
     }
+
+    // Jurnal otomatis invoice ikut dihapus (nomor jurnal = nomor invoice)
+    await deleteAutoJurnalInv(conn, nomor);
 
     await conn.commit();
   } catch (e) {

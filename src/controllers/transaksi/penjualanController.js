@@ -6,7 +6,9 @@ module.exports = {
       const todayStr = new Date().toISOString().substring(0, 10);
       const startDate = req.query.startDate || todayStr;
       const endDate = req.query.endDate || todayStr;
-      res.json({ success: true, data: await svc.getBrowse(startDate, endDate) });
+      // User cabang hanya boleh melihat nota cabangnya sendiri
+      const resData = await svc.getBrowse(startDate, endDate, req.user?.cabang);
+      res.json({ success: true, data: resData });
     } catch (e) {
       res.status(500).json({ success: false, message: e.message });
     }

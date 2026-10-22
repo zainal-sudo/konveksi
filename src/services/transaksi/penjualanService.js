@@ -1,6 +1,11 @@
 const db = require("../../config/database");
+const { deleteAutoJurnalPenjualan } = require("../../utils/jurnalPenjualan");
 
-const getBrowse = async (startDate, endDate) => {
+// nomor SO membawa kode cabang: SO.<cbg>-luar untuk pusat, SO01./SO02. utk cabang
+const nomorPrefixCabang = (cabang) => (cabang && String(cabang) !== "00" ? `SO${Number(cabang)}.` : "SO.");
+
+const getBrowse = async (startDate, endDate, cabangUser) => {
+  const prefix = nomorPrefixCabang(cabangUser);
   const [rows] = await db.query(
     `SELECT
       h.so_nomor AS Nomor,
@@ -10,13 +15,18 @@ const getBrowse = async (startDate, endDate) => {
       IF(h.so_istax = 1 OR h.so_istax = 2, 'Ya', 'Tidak') AS Pajak,
       h.so_amount AS Total,
       h.so_taxamount AS Ppn,
+      IFNULL(h.so_dp, 0) AS Cash,
+      IFNULL(h.so_ongkir, 0) AS Ongkir,
+      IFNULL(h.so_piutang, 0) AS Piutang,
+      IFNULL(h.so_card, 0) AS Card,
+      IFNULL(h.so_voucher, 0) AS Voucher,
       IF(h.so_isclosed = 1, 'Closed', 'Open') AS Status,
       IF(IFNULL(h.so_status_rec, 0) > 0, 'Sudah', 'Belum') AS Kirim
      FROM tso_hdr h
      LEFT JOIN tcustomer c ON h.so_cus_kode = c.cus_kode
-     WHERE h.so_tanggal BETWEEN ? AND ?
+     WHERE h.so_tanggal BETWEEN ? AND ? AND h.so_nomor LIKE ?
      ORDER BY h.so_nomor DESC`,
-    [startDate, endDate]
+    [startDate, endDate, `${prefix}%`]
   );
   return rows;
 };
@@ -59,6 +69,8 @@ const deleteData = async (nomor) => {
   try {
     await conn.query(`DELETE FROM tso_dtl WHERE sod_so_nomor = ?`, [nomor]);
     await conn.query(`DELETE FROM tso_hdr WHERE so_nomor = ?`, [nomor]);
+    await conn.query(`DELETE FROM tmasterstok WHERE mst_noreferensi = ?`, [nomor]);
+    await deleteAutoJurnalPenjualan(conn, nomor);
     await conn.commit();
   } catch (e) {
     await conn.rollback();
@@ -94,9 +106,20 @@ const getPrintData = async (nomor) => {
       IFNULL(h.so_memo, '') AS memo,
       IFNULL(h.so_amount, 0) AS amount,
       IFNULL(h.so_taxamount, 0) AS taxamount,
-      0 AS dp,
+      IFNULL(h.so_ongkir, 0) AS ongkir,
+      IFNULL(h.so_bayar, 0) AS bayar,
+      IFNULL(h.so_kembali, 0) AS kembali,
+      IFNULL(h.so_dp, 0) AS dp,
+      IFNULL(h.so_voucher, 0) AS voucher,
+      IFNULL(h.so_no_voucher, '') AS no_voucher,
+      IFNULL(h.so_card, 0) AS card,
+      IFNULL(h.so_no_card, '') AS no_card,
+      IFNULL(h.so_bank_card, '') AS bank_card,
+      IFNULL(h.so_piutang, 0) AS piutang,
+      IFNULL(h.so_istax, 0) AS istax,
       IFNULL(h.so_disc_faktur, 0) AS disc_faktur,
       IFNULL(h.so_disc_fakturpr, 0) AS disc_fakturpr,
+      IFNULL(h.so_user_kasir, '') AS user_kasir,
       IFNULL(c.cus_nama, '') AS cus_nama,
       IFNULL(c.cus_alamat, '') AS cus_alamat,
       IFNULL(c.cus_telp, '') AS cus_telp
@@ -136,6 +159,15 @@ const getPrintData = async (nomor) => {
   const discFakturPr = Number(header.disc_fakturpr);
   const discFaktur = Number(header.disc_faktur);
   const nilai = amount - taxamount;
+  const ongkir = Number(header.ongkir) || 0;
+  const bayar = Number(header.bayar) || 0;
+  const voucher = Number(header.voucher) || 0;
+  const card = Number(header.card) || 0;
+  const piutang = Number(header.piutang) || 0;
+  const kembali = Number(header.kembali) || 0;
+  const dp = Number(header.dp) || 0;
+  const grandTotal = amount + ongkir;
+  const totalBayar = bayar + voucher + card + piutang;
 
   return {
     nomor: header.nomor,
@@ -143,8 +175,22 @@ const getPrintData = async (nomor) => {
     memo: header.memo,
     amount,
     taxamount,
-    dp: 0,
+    ongkir,
+    bayar,
+    kembali,
+    dp,
+    voucher,
+    noVoucher: header.no_voucher,
+    card,
+    noCard: header.no_card,
+    bankCard: header.bank_card,
+    piutang,
+    totalBayar,
+    grandTotal,
+    isTax: Number(header.istax) || 0,
+    userKasir: header.user_kasir,
     discFaktur,
+    discFakturPr,
     nilai,
     total: amount,
     cus_nama: header.cus_nama,

@@ -1,5 +1,7 @@
 const db = require("../../config/database");
 const { acquireLock, releaseLock } = require("../../utils/nomorLock");
+const { createAutoJurnalRetur } = require("../../utils/jurnalRetur");
+const { cekTutupPeriode } = require("../tutupBukuService");
 
 const getSupplierOptions = async (search = "") => {
   const [rows] = await db.query(
@@ -254,6 +256,10 @@ const saveData = async (payload, user) => {
     if (!Array.isArray(detail) || detail.length === 0) {
       throw new Error("Detail barang tidak boleh kosong.");
     }
+
+    // Jurnal otomatis retur memakai tanggal retur — blokir periode tertutup.
+    const tutup = await cekTutupPeriode(tanggal);
+    if (tutup) throw new Error("Periode sudah ditutup. Tidak bisa menyimpan retur.");
     for (const item of detail) {
       if (!item.expired || !item.expired.trim()) {
         throw new Error(
@@ -327,16 +333,35 @@ const saveData = async (payload, user) => {
     let index = 1;
     for (const item of detail) {
       await conn.query(
-        `INSERT INTO tret_dtl 
+        `INSERT INTO tret_dtl
           (retd_ret_nomor, retd_brg_kode, retd_brg_satuan, retd_qty, retd_harga, retd_discpr, retd_nourut, retd_expired)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          actualNomor, item.brgKode, item.satuan, item.qty, item.harga, 
+          actualNomor, item.brgKode, item.satuan, item.qty, item.harga,
           item.discPr || 0, index, item.expired
         ]
       );
       index++;
     }
+
+    // ── Jurnal otomatis retur ────────────────────────────────────────
+    // Cr Persediaan (per jenis barang) + Cr PPN Masukan
+    //   vs Dr Pot. Pembelian + Dr Hutang Dagang (cermin jurnal invoice)
+    const [[supRow]] = await conn.query(
+      `SELECT sup_nama AS supNama FROM tsupplier WHERE sup_kode = ?`,
+      [supKode]
+    );
+    await createAutoJurnalRetur(conn, {
+      nomor: actualNomor,
+      tanggal,
+      isTax,
+      taxAmount,
+      discTotal: discFaktur,
+      amount,
+      detail,
+      supNama: supRow?.supNama || "",
+      user: username,
+    });
 
     await conn.commit();
     return { nomor: actualNomor };

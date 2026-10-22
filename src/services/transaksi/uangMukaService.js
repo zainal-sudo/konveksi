@@ -29,7 +29,7 @@ const getBrowse = async (startDate, endDate, cabang) => {
       b.bon_jur_no       AS NoBukti,
       IF(b.bon_selesai=0,'Belum','Sudah') AS Selesai,
       IF(IFNULL((
-        SELECT h.jur_close FROM tjurnal h WHERE h.jur_no = b.bon_jur_no
+        SELECT h.jur_isclosed FROM tjurnal h WHERE h.jur_no = b.bon_jur_no
       ), 0)=0,'Belum','Sudah') AS Closed
     FROM tkasbon b
     LEFT JOIN trekening r ON r.rek_kode = b.bon_rek_kode
@@ -119,7 +119,7 @@ const getBrowsePendingAll = async () => {
        b.bon_jur_no       AS NoBukti,
        IF(b.bon_selesai=0,'Belum','Sudah') AS Selesai,
        IF(IFNULL((
-         SELECT h.jur_close FROM tjurnal h WHERE h.jur_no = b.bon_jur_no
+         SELECT h.jur_isclosed FROM tjurnal h WHERE h.jur_no = b.bon_jur_no
        ), 0)=0,'Belum','Sudah') AS Closed
      FROM tkasbon b
      LEFT JOIN trekening r ON r.rek_kode = b.bon_rek_kode

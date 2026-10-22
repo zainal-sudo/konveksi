@@ -1,8 +1,13 @@
 const db = require("../../config/database"); // Sesuaikan path database Anda
 
-const getLaporanPersediaan = async (gdgKode = "") => {
+// Laporan Persediaan:
+// - Pusat (cabang "00"/kosong): boleh melihat semua gudang / filter gudang.
+// - Cabang (mis. "01"/"02"): dipaksa hanya melihat persediaan gudang milik
+//   cabangnya sendiri (filter berdasarkan tgudang.gdg_cbg_kode).
+const getLaporanPersediaan = async (gdgKode = "", cabangUser = "00") => {
+  const isPusat = !cabangUser || String(cabangUser) === "00";
   let query = `
-    SELECT 
+    SELECT
       gdg_kode,
       gdg_nama,
       brg_kode,
@@ -10,13 +15,16 @@ const getLaporanPersediaan = async (gdgKode = "") => {
       brg_satuan,
       SUM(mst_stok_in - mst_stok_out) AS stok,
       SUM((mst_stok_in - mst_stok_out) * mst_avgcost) AS nilai
-    FROM tbarang 
+    FROM tbarang
     INNER JOIN tmasterstok ON mst_brg_kode = brg_kode
     INNER JOIN tgudang ON gdg_kode = mst_gdg_kode
   `;
-  
+
   const params = [];
-  if (gdgKode) {
+  if (!isPusat) {
+    query += ` WHERE gdg_cbg_kode = ?`;
+    params.push(String(cabangUser));
+  } else if (gdgKode) {
     query += ` WHERE mst_gdg_kode = ?`;
     params.push(gdgKode);
   }

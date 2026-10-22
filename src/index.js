@@ -31,6 +31,7 @@ const bpbFormRoutes = require("./routes/transaksi/bpbFormRoutes");
 const returRoutes     = require("./routes/transaksi/returRoutes");
 const returFormRoutes = require("./routes/transaksi/returFormRoutes");
 const bayarSupplierRoutes = require("./routes/transaksi/bayarSupplierRoutes");
+const bayarCustomerRoutes = require("./routes/transaksi/bayarCustomerRoutes");
 const penjualanRoutes = require("./routes/transaksi/penjualanRoutes");
 const penjualanFormRoutes = require("./routes/transaksi/penjualanFormRoutes");
 
@@ -52,9 +53,18 @@ const penyesuaianStokFormRoutes = require("./routes/transaksi/penyesuaianStokFor
 const pembayaranCustomerRoutes = require("./routes/posting/pembayaranCustomerRoutes");
 const pembayaranCustomerFormRoutes = require("./routes/posting/pembayaranCustomerFormRoutes");
 
+// ── Accounting Routes ──
+const accountingJurnalUmumRoutes = require("./routes/accounting/jurnalUmumRoutes");
+const accountingJurnalUmumFormRoutes = require("./routes/accounting/jurnalUmumFormRoutes");
+const accountingPembayaranLainRoutes = require("./routes/accounting/pembayaranLainRoutes");
+const accountingPembayaranLainFormRoutes = require("./routes/accounting/pembayaranLainFormRoutes");
+const accountingPenerimaanLainRoutes = require("./routes/accounting/penerimaanLainRoutes");
+const accountingPenerimaanLainFormRoutes = require("./routes/accounting/penerimaanLainFormRoutes");
+
 // ── Laporan Routes ──
 const listJurnalRoutes = require("./routes/laporan/listJurnalRoutes");
 const persediaanRoutes = require("./routes/laporan/persediaanRoutes");
+const penjualanItemRoutes = require("./routes/laporan/penjualanItemRoutes");
 
 
 const app = express();
@@ -72,6 +82,11 @@ app.use(
 
 app.use(express.json());
 app.use("/images", express.static(path.join(process.cwd(), "public/images")));
+
+// Batasan user CABANG: modul tulis (POST/PUT/DELETE) hanya Penjualan & Mutasi
+// (out/in). Dipasang sebelum semua route modul.
+const { batasiCabang } = require("./middleware/authMiddleware");
+app.use(batasiCabang);
 
 // Endpoint untuk cek versi backend
 app.get("/api/system/info", systemCtrl.getSystemInfo);
@@ -105,6 +120,7 @@ app.use("/api/transaksi/bpb/form",  bpbFormRoutes);
 app.use("/api/transaksi/retur",       returRoutes);
 app.use("/api/transaksi/retur/form",  returFormRoutes);
 app.use("/api/transaksi/bayarSupplier", bayarSupplierRoutes);
+app.use("/api/transaksi/bayarCustomer", bayarCustomerRoutes);
 app.use("/api/transaksi/penjualan", penjualanRoutes);
 app.use("/api/transaksi/penjualan/form", penjualanFormRoutes);
 
@@ -118,6 +134,16 @@ app.use("/api/transaksi/stbj/form", stbjFormRoutes);
 app.use("/api/transaksi/mutasi", mutasiRoutes);
 app.use("/api/transaksi/mutasi/form", mutasiFormRoutes);
 
+// ── Mutasi antar cabang (tmutcab_* / tmutcabin_*) ──
+const mutasiCabangOutRoutes = require("./routes/transaksi/mutasiCabangOutRoutes");
+const mutasiCabangOutFormRoutes = require("./routes/transaksi/mutasiCabangOutFormRoutes");
+const mutasiCabangInRoutes = require("./routes/transaksi/mutasiCabangInRoutes");
+const mutasiCabangInFormRoutes = require("./routes/transaksi/mutasiCabangInFormRoutes");
+app.use("/api/transaksi/mutasi-out", mutasiCabangOutRoutes);
+app.use("/api/transaksi/mutasi-out/form", mutasiCabangOutFormRoutes);
+app.use("/api/transaksi/mutasi-in", mutasiCabangInRoutes);
+app.use("/api/transaksi/mutasi-in/form", mutasiCabangInFormRoutes);
+
 app.use("/api/transaksi/jurnal-umum", jurnalUmumRoutes);
 app.use("/api/transaksi/jurnal-umum/form", jurnalUmumFormRoutes);
 app.use("/api/transaksi/penyesuaian-stok", penyesuaianStokRoutes);
@@ -127,9 +153,19 @@ app.use("/api/transaksi/penyesuaian-stok/form", penyesuaianStokFormRoutes);
 app.use("/api/posting/pembayaran-customer", pembayaranCustomerRoutes);
 app.use("/api/posting/pembayaran-customer/form", pembayaranCustomerFormRoutes);
 
+// ── Accounting Routes ──
+app.use("/api/accounting/jurnal-umum", accountingJurnalUmumRoutes);
+app.use("/api/accounting/jurnal-umum/form", accountingJurnalUmumFormRoutes);
+app.use("/api/accounting/pembayaran-lain", accountingPembayaranLainRoutes);
+app.use("/api/accounting/pembayaran-lain/form", accountingPembayaranLainFormRoutes);
+app.use("/api/accounting/penerimaan-lain", accountingPenerimaanLainRoutes);
+app.use("/api/accounting/penerimaan-lain/form", accountingPenerimaanLainFormRoutes);
+
 // ── Laporan Routes ──
 app.use("/api/laporan/list-jurnal", listJurnalRoutes);
 app.use("/api/laporan/persediaan", persediaanRoutes);
+app.use("/api/laporan/penjualanitem", penjualanItemRoutes);
+app.use("/api/laporan/akunting", require("./routes/laporan/neracaLabRugiRoutes"));
 
 // ── Health check ──
 app.get("/api/health", (req, res) => {

@@ -74,4 +74,46 @@ const checkPermission = (menuId, action) => {
   };
 };
 
-module.exports = { verifyToken, checkPermission };
+/**
+ * batasiCabang
+ * User CABANG (bukan pusat '01'.. dst, pusat = '00') hanya boleh bertulis
+ * (POST/PUT/DELETE) pada modul Penjualan dan Mutasi antar cabang (out/in).
+ * Gabungan GET tetap dibuka supaya browse/read tidak terputus.
+ */
+const PREFIX_DIIZINKAN_CABANG = [
+  "/api/transaksi/penjualan", // + /form
+  "/api/transaksi/mutasi-out", // + /form
+  "/api/transaksi/mutasi-in", // + /form (modul baru)
+  "/api/laporan/persediaan", // Laporan persediaan cabang
+  "/api/laporan/penjualanitem", // Laporan jual per item cabang
+];
+
+const batasiCabang = (req, res, next) => {
+  if (req.method === "GET" || req.method === "OPTIONS") return next();
+
+  let cabang = req.user?.cabang;
+  if (!cabang) {
+    const authHeader = req.headers["authorization"];
+    const token = authHeader && authHeader.split(" ")[1];
+    if (!token) return next(); // biarkan verifyToken per-route yang menolak
+    try {
+      cabang = jwt.verify(token, process.env.JWT_SECRET).cabang || "00";
+    } catch {
+      return next();
+    }
+  }
+
+  if (cabang === "00") return next();
+
+  const ok = PREFIX_DIIZINKAN_CABANG.some((p) => req.originalUrl.startsWith(p));
+  if (!ok) {
+    return res.status(403).json({
+      success: false,
+      message:
+        "User cabang hanya boleh transaksi Penjualan dan Mutasi antar cabang (out/in).",
+    });
+  }
+  next();
+};
+
+module.exports = { verifyToken, checkPermission, batasiCabang };
