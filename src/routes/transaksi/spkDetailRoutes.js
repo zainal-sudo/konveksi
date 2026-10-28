@@ -1,14 +1,18 @@
 const router = require("express").Router();
 const ctrl = require("../../controllers/transaksi/spkDetailController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
-const menuId = 60;
+const menuId = 84;
 
-// ⚠️ URUTAN PENTING: route spesifik/statis harus di atas "/:nomor",
-// kalau tidak, Express akan menganggap "kategori" atau "proses-oleh-barang"
-// sebagai nilai param :nomor.
 router.get("/kategori", verifyToken, checkPermission(menuId, "view"), ctrl.getKategoriList);
-router.get("/proses-oleh-barang/:brgKode", verifyToken, checkPermission(menuId, "view"), ctrl.getProsesByBarang);
+
+// ⬇️ BARU
+router.get("/template/:prsKode", verifyToken, checkPermission(menuId, "view"), ctrl.getTemplateByKategori);
+
+// Backfill tahap Master Proses yang belum masuk ke SPK lama (tahap terakhir
+// tidak muncul di LHK karena tspk_dtl hanya di-generate saat SPK dibuat).
+router.post("/sync/:nomor", verifyToken, checkPermission(menuId, "update"), ctrl.syncTahap);
+
 router.get("/:nomor", verifyToken, checkPermission(menuId, "view"), ctrl.getBySpk);
-router.put("/:id", verifyToken, checkPermission(menuId, "insert"), ctrl.update);
+router.put("/:id", verifyToken, checkPermission(menuId, "update"), ctrl.update);
 
 module.exports = router;

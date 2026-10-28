@@ -37,6 +37,9 @@ const penjualanFormRoutes = require("./routes/transaksi/penjualanFormRoutes");
 
 const stbjRoutes = require("./routes/transaksi/stbjRoutes");
 const stbjFormRoutes = require("./routes/transaksi/stbjFormRoutes");
+const spkRoutes = require("./routes/transaksi/spkRoutes");
+const spkFormRoutes = require("./routes/transaksi/spkFormRoutes");
+const spkDetailRoutes = require("./routes/transaksi/spkDetailRoutes");
 const mutasiRoutes = require("./routes/transaksi/mutasiRoutes");
 const mutasiFormRoutes = require("./routes/transaksi/mutasiFormRoutes");
 
@@ -128,6 +131,10 @@ app.use("/api/transaksi/invoice", invRoutes);
 app.use("/api/transaksi/invoice/form", invFormRoutes);
 
 // Tambahkan di bagian app.use(...), persis di bawah baris po:
+app.use("/api/transaksi/spk", spkRoutes);
+app.use("/api/transaksi/spk/form", spkFormRoutes);
+app.use("/api/transaksi/spk/tahapan", spkDetailRoutes);
+
 app.use("/api/transaksi/stbj", stbjRoutes);
 app.use("/api/transaksi/stbj/form", stbjFormRoutes);
 
