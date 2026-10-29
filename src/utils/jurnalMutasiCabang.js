@@ -158,8 +158,10 @@ const createAutoJurnalMutasiOut = async (conn, data) => {
     total += nilai;
 
     const idx = kredits.findIndex((r) => r.rek === rek);
-    if (idx >= 0) kredits[idx].ket += ` + ${brg.nama || d.mutcd_brg_kode}`;
-    else kredits.push({ rek, ket: brg.nama || String(d.mutcd_brg_kode), nilai });
+    if (idx >= 0) {
+      kredits[idx].nilai += nilai;
+      kredits[idx].ket += ` + ${brg.nama || d.mutcd_brg_kode}`;
+    } else kredits.push({ rek, ket: brg.nama || String(d.mutcd_brg_kode), nilai });
   }
   if (total <= 0) return null;
 
@@ -226,8 +228,10 @@ const createAutoJurnalMutasiIn = async (conn, data) => {
     total += nilai;
 
     const idx = debets.findIndex((r) => r.rek === rek);
-    if (idx >= 0) debets[idx].ket += ` + ${brg.nama || d.mutcid_brg_kode}`;
-    else debets.push({ rek, ket: brg.nama || String(d.mutcid_brg_kode), nilai });
+    if (idx >= 0) {
+      debets[idx].nilai += nilai;
+      debets[idx].ket += ` + ${brg.nama || d.mutcd_brg_kode}`;
+    } else debets.push({ rek, ket: brg.nama || String(d.mutcid_brg_kode), nilai });
   }
   if (total <= 0) return null;
 
