@@ -34,11 +34,12 @@ const searchCustomer = async (search) => {
 };
 
 // ── Kas/Bank (akun KONVEKSI — kode dipakai langsung di jurnal) ──
+// 19.001 UANG MUKA PENJUALAN ikut ditampilkan (pembayaran dari deposit customer)
 const getRekeningOptions = async (search = "") => {
   const [rows] = await db.query(
     `SELECT REK_KODE AS kode, REK_NAMA AS nama
      FROM trekening
-     WHERE (REK_KODE LIKE '11.%' OR REK_KODE LIKE '12.%')
+     WHERE (REK_KODE LIKE '11.%' OR REK_KODE LIKE '12.%' OR REK_KODE = '19.001')
        AND (REK_NAMA LIKE ? OR REK_KODE LIKE ?)
      ORDER BY REK_KODE LIMIT 30`,
     [`%${search}%`, `%${search}%`],
@@ -97,7 +98,7 @@ const getAllHistory = async (startDate, endDate) => {
   if (rows.length) {
     const [kv] = await db.query(
       `SELECT REK_KODE, REK_NAMA FROM trekening
-       WHERE REK_KODE LIKE '11.%' OR REK_KODE LIKE '12.%'`,
+        WHERE REK_KODE LIKE '11.%' OR REK_KODE LIKE '12.%' OR REK_KODE = '19.001'`,
     );
     const mapKV = new Map(kv.map((x) => [x.REK_KODE, x.REK_NAMA]));
     rows.forEach((x) => {

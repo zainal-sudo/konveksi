@@ -23,27 +23,14 @@ const simpanKartuStokPenjualan = async (conn, { nomor, gudang, tanggal, detail, 
   await conn.query(`DELETE FROM tmasterstok WHERE mst_noreferensi = ?`, [nomor]);
   if (!gudang) throw new Error("Gudang penjualan untuk cabang ini tidak ditemukan.");
 
-  // Aggregate permintaan per barang + cek stok tersedia
+  // Aggregate permintaan — cek kecukupan stok sementara DILEPAS
+  // (penjualan boleh jalan meski stok 0/kurang; HPP ambil avgcost
+  //  gudang, fallback harga beli). Aktifkan kembali bila stok sudah bersih.
   const permintaan = new Map();
   for (const item of detail) {
     const qty = Number(item.qty) || 0;
     if (qty <= 0) continue;
     permintaan.set(item.brgKode, (permintaan.get(item.brgKode) || 0) + qty);
-  }
-  const stokTersedia = new Map();
-  for (const [brgKode, qty] of permintaan) {
-    const [[st]] = await conn.query(
-      `SELECT IFNULL(SUM(mst_stok_in - mst_stok_out), 0) AS total
-         FROM tmasterstok WHERE mst_brg_kode = ? AND mst_gdg_kode = ?`,
-      [brgKode, gudang]
-    );
-    const tersedia = Number(st?.total) || 0;
-    stokTersedia.set(brgKode, tersedia);
-    if (qty > tersedia) {
-      throw new Error(
-        `Stok barang (${brgKode}) di gudang ${gudang} tidak cukup: tersedia ${tersedia}, diminta ${qty}.`
-      );
-    }
   }
 
   for (const item of detail) {

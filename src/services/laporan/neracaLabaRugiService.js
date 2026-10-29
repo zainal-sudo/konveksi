@@ -67,7 +67,26 @@ const normalSaldoOf = (section) => {
 // ── Saldo per rekening ─────────────────────────────────────────────────
 // cum = saldo kumulatif 0 .. endDate (debet − kredit)
 // mut = saldo periode startDate .. endDate (debet − kredit)
-const getSaldoPerRekening = async (startDate, endDate) => {
+// cabang: "all" | kode cabang ("00","01",...) — atribusi jurnal ke cabang:
+//   - nomor bukti "<cabang>-XX.yymm.nnnn" (MTC, MTCI, CR, KM, KK, JUR,
+//     STBJ nomor besar) → prefix kode cabang
+//   - nomor SO "SO." = pusat, "SO1."/"SO2." = cabang 01/02
+//   - INV → tinv_hdr.inv_cabang
+//   - STBJ / RET → gudang transaksi → tgudang.gdg_cbg_kode
+const getCabangFilter = () => `
+    (
+      (j.jur_no REGEXP '^[0-9]{2}-' AND SUBSTRING_INDEX(j.jur_no, '-', 1) = ?)
+      OR (j.jur_no REGEXP '^SO[0-9]+[.]' AND LPAD(SUBSTRING_INDEX(SUBSTRING(j.jur_no, 3), '.', 1), 2, '0') = ?)
+      OR (j.jur_no LIKE 'SO.%' AND ? = '00')
+      OR (j.jur_no LIKE 'INV.%' AND IFNULL(NULLIF(iv.inv_cabang, ''), '00') = ?)
+      OR (j.jur_no LIKE 'STBJ.%' AND IFNULL(g.gdg_cbg_kode, '00') = ?)
+      OR (j.jur_no LIKE 'RET.%' AND IFNULL(g2.gdg_cbg_kode, '00') = ?)
+    )`.trim();
+
+const getSaldoPerRekening = async (startDate, endDate, cabang = "all") => {
+  const cab = String(cabang || "all").trim();
+  const useCabang = cab && cab !== "all";
+
   const [rows] = await db.query(
     `SELECT
        d.jurd_rek_kode AS kode,
@@ -79,13 +98,24 @@ const getSaldoPerRekening = async (startDate, endDate) => {
      FROM tjurnalitem d
      INNER JOIN tjurnal j ON j.jur_no = d.jurd_jur_no
      LEFT JOIN trekening r ON r.REK_KODE = d.jurd_rek_kode
-     WHERE d.jurd_nourut <> 0
+     LEFT JOIN tinv_hdr iv ON iv.inv_nomor = j.jur_no
+     LEFT JOIN tstbj_hdr s ON s.stbj_nomor = j.jur_no
+       LEFT JOIN tgudang g ON g.gdg_kode = s.stbj_gdg_kode
+     LEFT JOIN tret_hdr rt ON rt.ret_nomor = j.jur_no
+       LEFT JOIN tgudang g2 ON g2.gdg_kode = rt.ret_gdg_kode
+     WHERE (d.jurd_nourut <> 0
         OR d.jurd_rek_kode LIKE '11.%'
         OR d.jurd_rek_kode LIKE '12.%'
-        OR d.jurd_rek_kode LIKE '13.%'
+        OR d.jurd_rek_kode LIKE '13.%')
+       ${useCabang ? `AND ${getCabangFilter()}` : ""}
      GROUP BY d.jurd_rek_kode, r.REK_NAMA
      ORDER BY d.jurd_rek_kode`,
-    [endDate, endDate, startDate, endDate, startDate, endDate]
+    useCabang
+      ? [
+          endDate, endDate, startDate, endDate, startDate, endDate,
+          cab, cab, cab, cab, cab, cab,
+        ]
+      : [endDate, endDate, startDate, endDate, startDate, endDate]
   );
 
   return rows.map((r) => {
@@ -126,7 +156,7 @@ const groupRows = (recs, seluruh, pickSaldo) => {
 
 // ── NERACA (saldo kumulatif s/d endDate) ───────────────────────────────
 const getNeraca = async (endDate) => {
-  const recs = await getSaldoPerRekening("0000-01-01", endDate);
+  const recs = await getSaldoPerRekening("0000-01-01", endDate, "all");
   const recsCum = recs.filter((r) => r.section !== "EXCLUDE");
 
   const aktivaSections = [
@@ -190,8 +220,8 @@ const getNeraca = async (endDate) => {
 };
 
 // ── LABA RUGI (mutasi periode) ─────────────────────────────────────────
-const getLabaRugi = async (startDate, endDate) => {
-  const recs = await getSaldoPerRekening(startDate, endDate);
+const getLabaRugi = async (startDate, endDate, cabang = "all") => {
+  const recs = await getSaldoPerRekening(startDate, endDate, cabang);
   const recsMut = recs.filter((r) => r.section !== "EXCLUDE");
 
   const sections = [
@@ -220,6 +250,7 @@ const getLabaRugi = async (startDate, endDate) => {
 
   return {
     periode: { start: startDate, end: endDate },
+    cabang: String(cabang || "all"),
     groups,
     total: {
       pendapatanPenjualan,

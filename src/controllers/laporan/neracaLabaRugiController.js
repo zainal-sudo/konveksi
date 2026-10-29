@@ -17,13 +17,13 @@ const getNeraca = async (req, res) => {
 
 const getLabaRugi = async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, cabang = "all" } = req.query;
     if (!startDate || !endDate)
       return res.status(400).json({
         success: false,
         message: "startDate dan endDate wajib diisi.",
       });
-    const data = await svc.getLabaRugi(startDate, endDate);
+    const data = await svc.getLabaRugi(startDate, endDate, cabang);
     res.json({ success: true, data });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
