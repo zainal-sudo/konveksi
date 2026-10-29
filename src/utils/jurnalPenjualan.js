@@ -5,14 +5,13 @@ const db = require("../config/database");
  *
  * Skema per nota (nomor jurnal = nomor SO; idempotent, regenerasi saat edit):
  *
- *   Dr 11.002 KAS BESAR          = so_dp     (cash diterima - kembalian)
- *   Dr 12.001 BANK               = so_card   (card / debit)
- *   Dr 14.001 PIUTANG DAGANG     = so_piutang
- *   Dr 21.004 POTONGAN PENJULAN  = diskon faktur + voucher
- *   Dr 23.001 BIAYA PRODUKSI     = Σ (qty keluar x HPP barang)   [HPP penjualan]
- *   Cr 21.001 PENJUALAN BARANG   = bruto barang (Σ qty x harga x disc item)
- *   Cr 17.00x PERSEDIAAN         = Σ (qty keluar x HPP barang), rekening
- *                                  grup barang (tgroup.gr_rek_kode)
+ *   Dr {cbg_rek_kas} KAS CABANG        = so_dp     (cash diterima - kembalian)
+ *   Dr 12.001 BANK                     = so_card   (card / debit)
+ *   Dr {cbg_rek_piutang} PIUTANG       = so_piutang
+ *   Dr 21.004 POTONGAN PENJULAN        = diskon faktur + voucher
+ *   Dr 23.001 BIAYA PRODUKSI           = Σ (qty keluar x HPP barang)   [HPP penjualan]
+ *   Cr {cbg_rek_penjualan} PENJUALAN   = bruto barang (Σ qty x harga x disc item)
+ *   Cr {cbg_rek_persediaan / gr_rek_kode} PERSEDIAAN = Σ (qty keluar x HPP barang)
  *   Cr 23.018 BY KIRIM           = so_ongkir (ongkir ditagih ke customer => kredit/minus biaya)
  *   Cr 19.005 PPN KELUARAN       = so_taxamount (bila pajak)
  *
@@ -86,14 +85,20 @@ const writeJurnal = async (conn, { jurNo, tanggal, tipe, keterangan, user, debet
   return jurNo;
 };
 
-// ── Akun persediaan barang cabang (master cabang → fallback tgroup) ────
+// ── Akun-akun cabang (master cabang → fallback akun global) ───────────
+// Mengembalikan { kas, piutang, penjualan, persediaan }; yang kosong = null
 const getCabangRek = async (conn, cabangKode) => {
   const [[c]] = await conn.query(
-    `SELECT cbg_rek_persediaan FROM tcabang WHERE cbg_kode = ?`,
+    `SELECT cbg_rek_persediaan, cbg_rek_kas, cbg_rek_penjualan, cbg_rek_piutang
+        FROM tcabang WHERE cbg_kode = ?`,
     [cabangKode]
   );
-  const rek = String(c?.cbg_rek_persediaan || "").trim();
-  return rek || null;
+  return {
+    kas: String(c?.cbg_rek_kas || "").trim() || null,
+    piutang: String(c?.cbg_rek_piutang || "").trim() || null,
+    penjualan: String(c?.cbg_rek_penjualan || "").trim() || null,
+    persediaan: String(c?.cbg_rek_persediaan || "").trim() || null,
+  };
 };
 
 // ── Jurnal Penjualan: dibaca dari tso_hdr/tso_dtl yang sudah ter-insert ──
@@ -135,9 +140,13 @@ const createAutoJurnalPenjualan = async (conn, data) => {
   const [[cus]] = await conn.query(`SELECT cus_nama FROM tcustomer WHERE cus_kode = ?`, [h.so_cus_kode]);
   const cusNama = cus?.cus_nama || String(h.so_cus_kode || "");
 
-  // Tentukan rekening persediaan cabang (misal cabang '01' / AA -> cbg_rek_persediaan atau fallback grup/default)
+  // Tentukan rekening cabang (kas, piutang, penjualan, persediaan)
   const cabangAktif = cabang || "00";
-  const rekPersediaanCabang = await getCabangRek(conn, cabangAktif);
+  const cabRek = await getCabangRek(conn, cabangAktif);
+  const rekKasCabang = cabRek.kas || REK_KAS;
+  const rekPiutangCabang = cabRek.piutang || REK_PIUTANG;
+  const rekPenjualanCabang = cabRek.penjualan || REK_PENJUALAN;
+  const rekPersediaanCabang = cabRek.persediaan;
 
   // ── HPP penjualan: dari baris stok-keluar milik nota ini ──
   const [hppRows] = await conn.query(
@@ -154,7 +163,8 @@ const createAutoJurnalPenjualan = async (conn, data) => {
   for (const r of hppRows || []) {
     const nilai = (Number(r.stokOut) || 0) * (Number(r.avgcost) || 0);
     if (nilai <= 0) continue;
-    // Jika ada setting akun persediaan khusus cabang (misal AA), gunakan itu, jika tidak pakai grup barang / fallback
+    // Jika ada setting akun persediaan khusus cabang, gunakan itu,
+    // jika tidak pakai grup barang / fallback
     const rek = rekPersediaanCabang || r.rek || REK_PERSEDIAAN_FALLBACK;
     if (!persediaanMap[rek]) persediaanMap[rek] = { nama: r.brgKode, nilai: 0 };
     else persediaanMap[rek].nama += ` + ${r.brgKode}`;
@@ -163,9 +173,9 @@ const createAutoJurnalPenjualan = async (conn, data) => {
   }
 
   const debets = [
-    { rek: REK_KAS, ket: `Kas tunai penjualan ${nomor} - ${cusNama}`, nilai: kas },
+    { rek: rekKasCabang, ket: `Kas tunai penjualan ${nomor} - ${cusNama}`, nilai: kas },
     { rek: REK_BANK, ket: `Card pembayaran ${nomor}`, nilai: bank },
-    { rek: REK_PIUTANG, ket: `Piutang penjualan ${nomor} - ${cusNama}`, nilai: piutang },
+    { rek: rekPiutangCabang, ket: `Piutang penjualan ${nomor} - ${cusNama}`, nilai: piutang },
     {
       rek: REK_POTONGAN,
       ket: `Potongan penjualan ${nomor}${voucher ? ` (voucher ${h.so_no_voucher || ""})` : ""}`,
@@ -174,7 +184,7 @@ const createAutoJurnalPenjualan = async (conn, data) => {
     { rek: REK_HPP, ket: `HPP penjualan ${nomor} - ${cusNama}`, nilai: Math.round(totalHpp) },
   ];
   const kredits = [
-    { rek: REK_PENJUALAN, ket: `Penjualan barang ${nomor} - ${cusNama}`, nilai: bruto },
+    { rek: rekPenjualanCabang, ket: `Penjualan barang ${nomor} - ${cusNama}`, nilai: bruto },
     { rek: REK_ONGKIR, ket: `Ongkir ditagih penjualan ${nomor}`, nilai: ongkir },
     { rek: REK_PPN, ket: `PPN keluaran ${nomor}`, nilai: tax },
   ];

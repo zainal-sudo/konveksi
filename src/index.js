@@ -68,6 +68,7 @@ const accountingPenerimaanLainFormRoutes = require("./routes/accounting/penerima
 const listJurnalRoutes = require("./routes/laporan/listJurnalRoutes");
 const persediaanRoutes = require("./routes/laporan/persediaanRoutes");
 const penjualanItemRoutes = require("./routes/laporan/penjualanItemRoutes");
+const hutangRoutes = require("./routes/laporan/hutangRoutes");
 
 
 const app = express();
@@ -172,6 +173,7 @@ app.use("/api/accounting/penerimaan-lain/form", accountingPenerimaanLainFormRout
 app.use("/api/laporan/list-jurnal", listJurnalRoutes);
 app.use("/api/laporan/persediaan", persediaanRoutes);
 app.use("/api/laporan/penjualanitem", penjualanItemRoutes);
+app.use("/api/laporan/hutang", hutangRoutes);
 app.use("/api/laporan/akunting", require("./routes/laporan/neracaLabRugiRoutes"));
 
 // ── Health check ──
