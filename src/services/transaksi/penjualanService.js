@@ -10,6 +10,7 @@ const getBrowse = async (startDate, endDate, cabangUser) => {
     `SELECT
       h.so_nomor AS Nomor,
       DATE_FORMAT(h.so_tanggal, '%Y-%m-%d') AS Tanggal,
+      DATE_FORMAT(h.so_dateline, '%Y-%m-%d') AS JtTempo,
       c.cus_nama AS Customer,
       h.so_memo AS Memo,
       IF(h.so_istax = 1 OR h.so_istax = 2, 'Ya', 'Tidak') AS Pajak,

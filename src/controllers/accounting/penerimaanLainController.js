@@ -7,7 +7,7 @@ const getBrowse = async (req, res) => {
     if (!startDate || !endDate) {
       return res.status(400).json({ success: false, message: "startDate dan endDate wajib." });
     }
-    const data = await svc.getBrowse(startDate, endDate);
+    const data = await svc.getBrowse(startDate, endDate, req.user?.cabang);
     res.json({ success: true, data });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });

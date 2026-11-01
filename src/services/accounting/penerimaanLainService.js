@@ -2,10 +2,11 @@ const db = require("../../config/database");
 
 /**
  * Browse Penerimaan Lain-Lain — sesuai SQLMaster Delphi
+ * User cabang ("01","02",..) hanya melihat data cabangnya (prefix nomor);
+ * "00" (pusat/all) melihat semua.
  */
-const getBrowse = async (startDate, endDate) => {
-  const [rows] = await db.query(
-    `SELECT
+const getBrowse = async (startDate, endDate, cabang) => {
+  let sql = `SELECT
        j.jur_no AS Nomor,
        DATE_FORMAT(j.jur_tanggal, '%Y-%m-%d') AS Tanggal,
        IFNULL(j.jur_keterangan, '') AS Keterangan,
@@ -14,11 +15,16 @@ const getBrowse = async (startDate, endDate) => {
      FROM tjurnal j
      INNER JOIN tjurnalitem d ON d.jurd_jur_no = j.jur_no
      WHERE j.jur_tipetransaksi = 'Penerimaan Lain'
-       AND j.jur_tanggal BETWEEN ? AND ?
-     GROUP BY j.jur_no
-     ORDER BY j.jur_no`,
-    [startDate, endDate]
-  );
+       AND j.jur_tanggal BETWEEN ? AND ?`;
+  const params = [startDate, endDate];
+
+  if (cabang && cabang !== "00") {
+    sql += ` AND j.jur_no LIKE ?`;
+    params.push(`${cabang}-%`);
+  }
+  sql += ` GROUP BY j.jur_no ORDER BY j.jur_no`;
+
+  const [rows] = await db.query(sql, params);
   return rows;
 };
 

@@ -87,6 +87,8 @@ const PREFIX_DIIZINKAN_CABANG = [
   "/api/transaksi/penyesuaian-stok", // Penyesuaian stok cabang
   "/api/transaksi/mutasi-out", // + /form
   "/api/transaksi/mutasi-in", // + /form (modul baru)
+  "/api/accounting/pembayaran-lain", // Pembayaran Lain-Lain cabang
+  "/api/accounting/penerimaan-lain", // Penerimaan Lain-Lain cabang
   "/api/laporan/persediaan", // Laporan persediaan cabang
   "/api/laporan/penjualanitem", // Laporan jual per item cabang
 ];
