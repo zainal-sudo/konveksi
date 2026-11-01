@@ -3,7 +3,7 @@ const svc = require("../../services/transaksi/bayarCustomerService");
 const getInitData = async (req, res) => {
   try {
     const nomorOtomatis = await svc.generateNomorBukti(
-      req.user?.cabang || "01",
+      req.user?.cabang || "00",
     );
     res.json({ success: true, data: { nomorOtomatis } });
   } catch (e) {
@@ -33,7 +33,7 @@ const getInvoicePiutang = async (req, res) => {
   try {
     const { cusKode } = req.params;
     if (!cusKode) throw new Error("Customer belum dipilih.");
-    const rows = await svc.getInvoicePiutang(cusKode);
+    const rows = await svc.getInvoicePiutang(cusKode, req.user?.cabang);
     res.json({ success: true, data: rows });
   } catch (e) {
     res.status(400).json({ success: false, message: e.message });
@@ -45,7 +45,7 @@ const getAllHistory = async (req, res) => {
     const { startDate, endDate } = req.query;
     res.json({
       success: true,
-      data: await svc.getAllHistory(startDate, endDate),
+      data: await svc.getAllHistory(startDate, endDate, req.user?.cabang),
     });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });
@@ -84,7 +84,7 @@ const getDetailForm = async (req, res) => {
   try {
     res.json({
       success: true,
-      data: await svc.getDetailForm(req.params.nomor),
+      data: await svc.getDetailForm(req.params.nomor, req.user?.cabang),
     });
   } catch (e) {
     res.status(404).json({ success: false, message: e.message });

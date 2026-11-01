@@ -3,7 +3,7 @@ const router = express.Router();
 const ctrl = require("../../controllers/master/jenisBarangController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 
-const menuId = 15; // sesuaikan dengan record menu "Jenis Barang" di tmenu
+const menuId = 4;; // sesuaikan dengan record menu "Jenis Barang" di tmenu
 
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getAll);
 router.get("/:kode", verifyToken, checkPermission(menuId, "view"), ctrl.getById);

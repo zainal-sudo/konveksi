@@ -1,7 +1,7 @@
 const router = require("express").Router();
 const ctrl = require("../../controllers/transaksi/spkController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
-const menuId = 84; // SPK — sesuai tmenu.sql MEN_ID=84 (frmSPK)
+const menuId = 16;; // SPK — sesuai tmenu.sql MEN_ID=84 (frmSPK)
 
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getBrowse);
 router.get("/detail-all", verifyToken, checkPermission(menuId, "view"), ctrl.getBrowseDetailAll);

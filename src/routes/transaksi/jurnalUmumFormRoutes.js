@@ -6,7 +6,7 @@ const {
   checkPermission,
 } = require("../../middleware/authMiddleware");
 
-const menuId = 26;
+const menuId = 24;;
 
 router.get(
   "/account-all",

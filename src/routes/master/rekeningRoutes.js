@@ -3,7 +3,7 @@ const router = express.Router();
 const ctrl = require("../../controllers/master/rekeningController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 
-const menuId = 6; // Ganti sesuai ID Menu Rekening Anda
+const menuId = 3;; // Ganti sesuai ID Menu Rekening Anda
 
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getAll);
 router.get("/:kode", verifyToken, checkPermission(menuId, "view"), ctrl.getById);

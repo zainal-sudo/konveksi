@@ -6,7 +6,7 @@ const {
   checkPermission,
 } = require("../../middleware/authMiddleware");
 
-const menuId = 8;
+const menuId = 23;;
 
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getAll);
 router.post(

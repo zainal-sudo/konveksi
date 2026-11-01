@@ -1,7 +1,7 @@
 const router = require("express").Router();
 const ctrl = require("../../controllers/transaksi/stbjController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
-const menuId = 40; // Sesuaikan ID menu STBJ Anda
+const menuId = 17;; // Sesuaikan ID menu STBJ Anda
 
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getBrowse);
 router.get("/detail/:nomor", verifyToken, checkPermission(menuId, "view"), ctrl.getDetail);

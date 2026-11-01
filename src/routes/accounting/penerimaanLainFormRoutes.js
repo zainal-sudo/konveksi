@@ -3,7 +3,7 @@ const router = express.Router();
 const ctrl = require("../../controllers/accounting/penerimaanLainFormController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 
-const menuId = 23;
+const menuId = 26;;
 
 router.get("/get-max-nomor", verifyToken, checkPermission(menuId, "view"), ctrl.getMaxNomor);
 router.get("/search-account", verifyToken, checkPermission(menuId, "view"), ctrl.searchAccount);

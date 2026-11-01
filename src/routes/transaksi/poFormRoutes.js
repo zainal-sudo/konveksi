@@ -1,7 +1,7 @@
 const router = require("express").Router();
 const ctrl = require("../../controllers/transaksi/poFormController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
-const menuId = 15; // ⚠️ Disamakan dengan MENU_ID frontend ("15") — sebelumnya 30, beda dari poRoutes.js dan frontend
+const menuId = 11;; // ⚠️ Disamakan dengan MENU_ID frontend ("15") — sebelumnya 30, beda dari poRoutes.js dan frontend
 
 router.get("/supplier", verifyToken, checkPermission(menuId, "view"), ctrl.getSupplierOptions);
 router.get("/barang", verifyToken, checkPermission(menuId, "view"), ctrl.getBarangOptions);

@@ -4,7 +4,7 @@ const ctrl = require("../../controllers/master/prosesController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 
 // TODO: sesuaikan menuId ini dengan database hak akses (menu baru "Master Proses")
-const menuId = 30;
+const menuId = 7;;
 
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getAll);
 router.get("/:kode", verifyToken, checkPermission(menuId, "view"), ctrl.getById);

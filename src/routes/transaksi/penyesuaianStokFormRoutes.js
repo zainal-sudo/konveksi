@@ -1,7 +1,7 @@
 const router = require("express").Router();
 const ctrl = require("../../controllers/transaksi/penyesuaianStokFormController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
-const menuId = 27;
+const menuId = 18;;
 
 router.get("/gudang", verifyToken, checkPermission(menuId, "view"), ctrl.getGudang);
 router.get("/barang/:gdgKode", verifyToken, checkPermission(menuId, "view"), ctrl.getBarangByGudang);

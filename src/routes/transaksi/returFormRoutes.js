@@ -1,7 +1,7 @@
 const router = require("express").Router();
 const ctrl = require("../../controllers/transaksi/returFormController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
-const menuId = 16; // Retur Pembelian
+const menuId = 14;; // Retur Pembelian
 
 router.get("/supplier", verifyToken, checkPermission(menuId, "view"), ctrl.getSupplierOptions);
 router.get("/rekening", verifyToken, checkPermission(menuId, "view"), ctrl.getRekeningOptions);

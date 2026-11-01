@@ -6,7 +6,7 @@ const {
   checkPermission,
 } = require("../../middleware/authMiddleware");
 
-const menuId = 51;
+const menuId = 23;;
 
 // Load data dari kencanaprint.terima_bayar_debet
 router.get(

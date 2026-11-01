@@ -1,6 +1,9 @@
 const db = require("../../config/database");
-const dbMm = require("../../config/databaseMinimarket");
 const { cekTutupPeriode } = require("../tutupBukuService");
+
+// nomor SO membawa kode cabang: SO. = pusat, SO01./SO02. = cabang 01/02 (spt penjualan)
+const nomorPrefixCabang = (cabang) =>
+  cabang && String(cabang) !== "00" ? `SO${Number(cabang)}.` : "SO.";
 
 // ── Nomor otomatis: {CABANG}-CR.{yymm}.{urut4}  cth: 01-CR.2609.0001 ──
 // (porting getmaxkode ufrmBayarCustomer, NOMERATOR = 'CR')
@@ -8,11 +11,11 @@ const generateNomorBukti = async (cabang, tanggal) => {
   const d = tanggal ? new Date(tanggal) : new Date();
   const yy = String(d.getFullYear()).slice(2);
   const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const prefix = `${cabang || "01"}-CR.${yy}${mm}.`;
+  const prefix = `${String(cabang || "00").padStart(2, "0")}-CR.${yy}${mm}.`;
 
-  const [[row]] = await dbMm.query(
+  const [[row]] = await db.query(
     `SELECT IFNULL(MAX(CAST(RIGHT(byc_nomor, 4) AS UNSIGNED)), 0) AS max_val
-     FROM minimarket.tbayarcus_hdr WHERE byc_nomor LIKE ?`,
+     FROM tbayarcus_hdr WHERE byc_nomor LIKE ?`,
     [`${prefix}%`],
   );
   const nextNum = 10000 + Number(row.max_val) + 1;
@@ -21,11 +24,11 @@ const generateNomorBukti = async (cabang, tanggal) => {
 
 // ── Cari customer (kode/nama) + alamat ──
 const searchCustomer = async (search) => {
-  const [rows] = await dbMm.query(
+  const [rows] = await db.query(
     `SELECT Cus_kode AS kode, Cus_nama AS nama,
             IFNULL(Cus_alamat, '') AS alamat,
             IFNULL(Cus_telp, '') AS telp
-     FROM minimarket.tcustomer
+     FROM tcustomer
      WHERE Cus_kode LIKE ? OR Cus_nama LIKE ?
      ORDER BY Cus_nama LIMIT 50`,
     [`%${search || ""}%`, `%${search || ""}%`],
@@ -50,8 +53,9 @@ const getRekeningOptions = async (search = "") => {
 // ── Invoice piutang belum lunas saat customer dipilih ──
 // (porting loaddataInvoice: so_amount+so_ongkir sebagai piutang,
 //  IFNULL(so_bayar,0) sebagai terbayar, hanya yang masih bersisa)
-const getInvoicePiutang = async (cusKode) => {
-  const [rows] = await dbMm.query(
+const getInvoicePiutang = async (cusKode, cabang) => {
+  const prefix = nomorPrefixCabang(cabang);
+  const [rows] = await db.query(
     `SELECT
        so_nomor AS invoiceNomor,
        DATE_FORMAT(so_tanggal, '%Y-%m-%d') AS invoiceTanggal,
@@ -59,18 +63,21 @@ const getInvoicePiutang = async (cusKode) => {
        (IFNULL(so_amount, 0) + IFNULL(so_ongkir, 0) - IFNULL(so_bayar, 0)) AS sisaPiutang,
        0 AS nilaiBayar,
        0 AS isChecked
-     FROM minimarket.tso_hdr
+     FROM tso_hdr
      WHERE so_cus_kode = ?
+       AND so_nomor LIKE ?
        AND IFNULL(so_piutang, 0) > 0
      HAVING sisaPiutang > 0
      ORDER BY so_tanggal ASC`,
-    [cusKode],
+    [cusKode, `${prefix}%`],
   );
   return rows;
 };
 
 // ── Riwayat pembayaran (porting SQLMaster ufrmBrowseBayarCustomer) ──
-const getAllHistory = async (startDate, endDate) => {
+const getAllHistory = async (startDate, endDate, cabang) => {
+  // bukti pembayaran berawalan kode cabang user: 00-CR. / 01-CR. / 02-CR.
+  const prefixRek = `${String(cabang || "00").padStart(2, "0")}-CR.`;
   let sql = `
     SELECT
       h.byc_nomor AS NOMOR,
@@ -82,18 +89,19 @@ const getAllHistory = async (startDate, endDate) => {
       IFNULL(h.byc_memo, '') AS MEMO,
       IFNULL(h.byc_istax, 0) AS ISTAX,
       IFNULL(h.isposting, 0) AS POSTING,
-      IFNULL(h.noposting, 0) AS NOPOSTING,
-      DATE_FORMAT((SELECT s.tanggal FROM minimarket.tsetoran s WHERE s.nomor = h.noposting LIMIT 1), '%Y-%m-%d') AS TGL_POSTING
-    FROM minimarket.tbayarcus_hdr h
-    LEFT JOIN minimarket.tcustomer c ON c.Cus_kode = h.byc_cus_kode`;
-  const params = [];
+      IFNULL(h.noposting, 0) AS NOPOSTING
+    FROM tbayarcus_hdr h
+    LEFT JOIN tcustomer c ON c.Cus_kode = h.byc_cus_kode`;
+  const params = [`${prefixRek}%`];
   if (startDate && endDate) {
     // DATE() agar perbandingan murni tanggal — abaikan komponen jam bila ada
-    sql += ` WHERE DATE(h.byc_tanggal) BETWEEN DATE(?) AND DATE(?)`;
+    sql += ` WHERE h.byc_nomor LIKE ? AND DATE(h.byc_tanggal) BETWEEN DATE(?) AND DATE(?)`;
     params.push(startDate, endDate);
+  } else {
+    sql += ` WHERE h.byc_nomor LIKE ?`;
   }
   sql += ` ORDER BY h.byc_nomor DESC`;
-  const [rows] = await dbMm.query(sql, params);
+  const [rows] = await db.query(sql, params);
   // REK_NAMA dari trekening KONVEKSI (kode rekening menyimpan akun konveksi)
   if (rows.length) {
     const [kv] = await db.query(
@@ -110,14 +118,14 @@ const getAllHistory = async (startDate, endDate) => {
 
 // ── Detail nota untuk expand di browse ──
 const getDetail = async (nomor) => {
-  const [rows] = await dbMm.query(
+  const [rows] = await db.query(
     `SELECT
        d.bycd_fp_nomor AS NoInvoice,
        DATE_FORMAT(i.so_tanggal, '%Y-%m-%d') AS TglInvoice,
        (IFNULL(i.so_amount, 0) + IFNULL(i.so_ongkir, 0)) AS TotalInvoice,
        d.bycd_bayar AS NilaiBayar
-     FROM minimarket.tbayarcus_dtl d
-     LEFT JOIN minimarket.tso_hdr i ON d.bycd_fp_nomor = i.so_nomor
+     FROM tbayarcus_dtl d
+     LEFT JOIN tso_hdr i ON d.bycd_fp_nomor = i.so_nomor
      WHERE d.bycd_byc_nomor = ?
      ORDER BY d.bycd_fp_nomor ASC`,
     [nomor],
@@ -126,8 +134,9 @@ const getDetail = async (nomor) => {
 };
 
 // ── Load form edit: header + daftar invoice (yang dibayar nota ini + yang masih bersisa) ──
-const getDetailForm = async (nomor) => {
-  const [[h]] = await dbMm.query(
+const getDetailForm = async (nomor, cabang) => {
+  const prefix = nomorPrefixCabang(cabang);
+  const [[h]] = await db.query(
     `SELECT
        h.byc_nomor AS nomorBukti,
        DATE_FORMAT(h.byc_tanggal, '%Y-%m-%d') AS tanggal,
@@ -139,8 +148,8 @@ const getDetailForm = async (nomor) => {
        IFNULL(h.byc_istax, 0) AS isPajak,
        h.byc_nilai AS totalBayar,
        IFNULL(h.isposting, 0) AS isposting
-      FROM minimarket.tbayarcus_hdr h
-      LEFT JOIN minimarket.tcustomer c ON c.Cus_kode = h.byc_cus_kode
+      FROM tbayarcus_hdr h
+      LEFT JOIN tcustomer c ON c.Cus_kode = h.byc_cus_kode
       WHERE h.byc_nomor = ?`,
     [nomor],
   );
@@ -152,7 +161,7 @@ const getDetailForm = async (nomor) => {
   );
   h.rekNama = kas?.REK_NAMA || "";
 
-  const [invoices] = await dbMm.query(
+  const [invoices] = await db.query(
     `SELECT
        inv.so_nomor AS invoiceNomor,
        DATE_FORMAT(inv.so_tanggal, '%Y-%m-%d') AS invoiceTanggal,
@@ -162,16 +171,17 @@ const getDetailForm = async (nomor) => {
          - IFNULL(inv.so_bayar, 0) + IFNULL(d.bycd_bayar, 0)) AS sisaPiutang,
        IFNULL(d.bycd_bayar, 0) AS nilaiBayar,
        IF(d.bycd_fp_nomor IS NOT NULL, 1, 0) AS isChecked
-     FROM minimarket.tso_hdr inv
-     LEFT JOIN minimarket.tbayarcus_dtl d
+     FROM tso_hdr inv
+     LEFT JOIN tbayarcus_dtl d
        ON d.bycd_fp_nomor = inv.so_nomor AND d.bycd_byc_nomor = ?
      WHERE inv.so_cus_kode = ?
+       AND inv.so_nomor LIKE ?
        AND (
          d.bycd_fp_nomor IS NOT NULL
          OR (IFNULL(inv.so_amount, 0) + IFNULL(inv.so_ongkir, 0) - IFNULL(inv.so_bayar, 0)) > 0
        )
-     ORDER BY inv.so_tanggal ASC`,
-    [nomor, h.cusKode],
+      ORDER BY inv.so_tanggal ASC`,
+    [nomor, h.cusKode, `${prefix}%`],
   );
 
   return { ...h, listInvoice: invoices };
@@ -243,7 +253,25 @@ const saveData = async (payload, user) => {
   const tutup = await cekTutupPeriode(header.tanggal);
   if (tutup) throw new Error("Periode sudah ditutup. Tidak bisa disimpan.");
 
-  const conn = await dbMm.getConnection();
+  // ── Validasi cabang: invoice harus milik cabang user, bukti edit juga ──
+  const prefix = nomorPrefixCabang(user?.cabang);
+  if (header.isEdit && !String(header.nomorBukti || "").startsWith(`${String(user?.cabang || "00").padStart(2, "0")}-CR.`))
+    throw new Error(
+      "Transaksi ini milik cabang lain, tidak dapat diubah dari cabang Anda.",
+    );
+  if (details.length) {
+    const [[bad]] = await db.query(
+      `SELECT COUNT(*) AS n FROM tso_hdr
+       WHERE so_nomor IN (?) AND so_nomor NOT LIKE ?`,
+      [details.map((dt) => dt.invoiceNomor), `${prefix}%`],
+    );
+    if (Number(bad.n) > 0)
+      throw new Error(
+        "Ada invoice piutang milik cabang lain — tidak dapat dibayar dari cabang Anda.",
+      );
+  }
+
+  const conn = await db.getConnection();
   await conn.beginTransaction();
   try {
     const now = new Date();
@@ -254,7 +282,7 @@ const saveData = async (payload, user) => {
 
       const [[cur]] = await conn.query(
         `SELECT IFNULL(isposting, 0) AS isposting
-         FROM minimarket.tbayarcus_hdr WHERE byc_nomor = ?`,
+         FROM tbayarcus_hdr WHERE byc_nomor = ?`,
         [nomorBukti],
       );
       if (!cur) throw new Error("Data pembayaran tidak ditemukan.");
@@ -263,12 +291,12 @@ const saveData = async (payload, user) => {
 
       // Hapus detail lama — trigger before_delete mengembalikan so_bayar
       await conn.query(
-        `DELETE FROM minimarket.tbayarcus_dtl WHERE bycd_byc_nomor = ?`,
+        `DELETE FROM tbayarcus_dtl WHERE bycd_byc_nomor = ?`,
         [nomorBukti],
       );
 
       await conn.query(
-        `UPDATE minimarket.tbayarcus_hdr
+        `UPDATE tbayarcus_hdr
          SET byc_tanggal = ?, byc_cus_kode = ?, byc_rek_kode = ?,
              byc_nilai = ?, byc_memo = ?, byc_istax = ?,
              date_modified = ?, user_modified = ?
@@ -288,11 +316,11 @@ const saveData = async (payload, user) => {
     } else {
       // ── INSERT baru, nomor selalu digenerate ulang ala Delphi ──
       const nomorBukti = await generateNomorBukti(
-        user?.cabang || "01",
+        user?.cabang || "00",
         header.tanggal,
       );
       await conn.query(
-        `INSERT INTO minimarket.tbayarcus_hdr
+        `INSERT INTO tbayarcus_hdr
            (byc_nomor, byc_tanggal, byc_cus_kode, byc_rek_kode,
             byc_nilai, byc_memo, byc_istax, date_create, user_create)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -314,7 +342,7 @@ const saveData = async (payload, user) => {
     // ── Insert detail baru — trigger before_insert menambah so_bayar ──
     for (const dt of details) {
       await conn.query(
-        `INSERT INTO minimarket.tbayarcus_dtl
+        `INSERT INTO tbayarcus_dtl
            (bycd_byc_nomor, bycd_fp_nomor, bycd_bayar)
          VALUES (?, ?, ?)`,
         [header.nomorBukti, dt.invoiceNomor, dt.nilaiBayar],
@@ -323,8 +351,6 @@ const saveData = async (payload, user) => {
 
     await conn.commit();
 
-    // Jurnal konveksi dibuat SETELAH commit minimarket
-    // (server DB berbeda — tidak bisa satu transaksi)
     let journalError = null;
     try {
       await buatJurnal(header, totalBayar, user);
@@ -344,9 +370,9 @@ const saveData = async (payload, user) => {
 
 // ── Hapus transaksi (kembalikan so_bayar via trigger before_delete) ──
 const deleteTransaksi = async (nomorBukti) => {
-  const [[cur]] = await dbMm.query(
+  const [[cur]] = await db.query(
     `SELECT byc_tanggal, IFNULL(isposting, 0) AS isposting
-     FROM minimarket.tbayarcus_hdr WHERE byc_nomor = ?`,
+     FROM tbayarcus_hdr WHERE byc_nomor = ?`,
     [nomorBukti],
   );
   if (!cur) throw new Error("Data pembayaran tidak ditemukan.");
@@ -356,14 +382,14 @@ const deleteTransaksi = async (nomorBukti) => {
   const tutup = await cekTutupPeriode(cur.byc_tanggal);
   if (tutup) throw new Error("Periode sudah ditutup. Tidak bisa dihapus.");
 
-  const conn = await dbMm.getConnection();
+  const conn = await db.getConnection();
   await conn.beginTransaction();
   try {
     await conn.query(
-      `DELETE FROM minimarket.tbayarcus_dtl WHERE bycd_byc_nomor = ?`,
+      `DELETE FROM tbayarcus_dtl WHERE bycd_byc_nomor = ?`,
       [nomorBukti],
     );
-    await conn.query(`DELETE FROM minimarket.tbayarcus_hdr WHERE byc_nomor = ?`, [
+    await conn.query(`DELETE FROM tbayarcus_hdr WHERE byc_nomor = ?`, [
       nomorBukti,
     ]);
     await conn.commit();

@@ -4,7 +4,7 @@ const ctrl = require("../../controllers/transaksi/invController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 // const { checkPermission } = require("../../middleware/auth"); // sesuaikan punya kamu
 
-const menuId = 12; // ⚠️ SAMAKAN dengan ID menu "Invoice" di tabel thakuser/menu kamu
+const menuId = 13;; // ⚠️ SAMAKAN dengan ID menu "Invoice" di tabel thakuser/menu kamu
 
 router.get("/", ctrl.getBrowse);
 router.get("/export-detail", ctrl.exportDetail);

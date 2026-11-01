@@ -6,8 +6,8 @@ const {
   checkPermission,
 } = require("../../middleware/authMiddleware");
 
-// Sesuaikan menuId ini dengan ID Master Supplier yang terdaftar di database Anda (contoh: 9)
-const menuId = 10; 
+// menuId = 8 'Supplier' (tmenu baru)
+const menuId = 8;
 
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getAll);
 router.get(

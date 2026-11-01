@@ -3,7 +3,7 @@ const router = express.Router();
 const ctrl = require("../../controllers/master/barangController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 
-const menuId = 14;
+const menuId = 5;;
 
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getAll);
 router.get("/form-refs", verifyToken, checkPermission(menuId, "view"), ctrl.getFormRefs);

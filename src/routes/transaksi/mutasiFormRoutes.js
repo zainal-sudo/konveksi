@@ -3,7 +3,7 @@ const router = express.Router();
 const controller = require("../../controllers/transaksi/mutasiFormController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 
-const MENU_ID = "13"; // Sesuaikan dengan Menu ID Mutasi Gudang Anda
+const MENU_ID = "19"; // tmenu baru: 19 = Mutasi Gudang
 
 router.get("/gudang", verifyToken, checkPermission(MENU_ID, "view"), controller.getGudang);
 router.get("/barang", verifyToken, checkPermission(MENU_ID, "view"), controller.getBarang);

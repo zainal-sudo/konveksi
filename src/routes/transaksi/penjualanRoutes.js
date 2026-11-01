@@ -2,7 +2,7 @@ const router = require("express").Router();
 const ctrl = require("../../controllers/transaksi/penjualanController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 
-const menuId = 33;
+const menuId = 22;;
 
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getBrowse);
 router.get("/detail/:nomor", verifyToken, checkPermission(menuId, "view"), ctrl.getBrowseDetail);

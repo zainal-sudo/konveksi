@@ -6,7 +6,7 @@ const {
   checkPermission,
 } = require("../../middleware/authMiddleware");
 
-const menuId = 1;
+const menuId = 33;;
 
 router.get(
   "/cabang",

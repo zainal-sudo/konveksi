@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const ctrl = require("../../controllers/transaksi/invFormController");
 
-const menuId = 12; // ⚠️ SAMAKAN dengan ID menu form Invoice
+const menuId = 13;; // ⚠️ SAMAKAN dengan ID menu form Invoice
 
 router.get("/bpb-options", ctrl.getBpbOptions);
 router.get("/bpb-detail/:nomor", ctrl.getBpbDetail);

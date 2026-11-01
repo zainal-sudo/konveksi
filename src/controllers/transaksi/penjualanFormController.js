@@ -30,4 +30,29 @@ module.exports = {
       res.status(400).json({ success: false, message: e.message });
     }
   },
+  savePending: async (req, res) => {
+    try {
+      const data = await svc.savePending(req.body, req.user);
+      res.json({ success: true, data, nomor: data.nomor, message: "Transaksi dipending." });
+    } catch (e) {
+      res.status(400).json({ success: false, message: e.message });
+    }
+  },
+  getPendingList: async (req, res) => {
+    try {
+      res.json({ success: true, data: await svc.getPendingList(req.user) });
+    } catch (e) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  },
+  takePending: async (req, res) => {
+    try {
+      const { noPending } = req.body || {};
+      if (!noPending) return res.status(400).json({ success: false, message: "Nomor pending wajib dipilih." });
+      const data = await svc.takePending(noPending, req.user);
+      res.json({ success: true, data });
+    } catch (e) {
+      res.status(400).json({ success: false, message: e.message });
+    }
+  },
 };

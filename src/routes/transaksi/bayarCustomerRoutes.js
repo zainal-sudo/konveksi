@@ -7,7 +7,7 @@ const {
 } = require("../../middleware/authMiddleware");
 
 // Pembayaran Customer (entry dari minimarket) = menu 51 konveksi
-const menuId = 51;
+const menuId = 23;;
 
 router.get("/init", verifyToken, checkPermission(menuId, "view"), ctrl.getInitData);
 router.get(

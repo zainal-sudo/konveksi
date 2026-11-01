@@ -1,7 +1,7 @@
 const router = require("express").Router();
 const ctrl = require("../../controllers/transaksi/bpbFormController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
-const menuId = 31;
+const menuId = 12;;
 
 router.get("/po-options",        verifyToken, checkPermission(menuId, "view"),   ctrl.getPoOptions);
 router.get("/po-detail/:nomor",verifyToken, checkPermission(menuId, "view"),   ctrl.getPoDetail);

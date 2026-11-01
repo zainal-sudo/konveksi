@@ -6,7 +6,7 @@ const {
   checkPermission,
 } = require("../../middleware/authMiddleware");
 
-const menuId = 21;
+const menuId = 0;;
 
 router.get(
   "/form/:nomor",

@@ -1,7 +1,7 @@
 const router = require("express").Router();
 const ctrl = require("../../controllers/transaksi/spkDetailController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
-const menuId = 84;
+const menuId = 16;;
 
 router.get("/kategori", verifyToken, checkPermission(menuId, "view"), ctrl.getKategoriList);
 

@@ -3,7 +3,7 @@ const router = express.Router();
 const ctrl = require("../../controllers/transaksi/bayarSupplierController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 
-const menuId = 53; // Sesuaikan dengan ID Menu Pembayaran Supplier Anda
+const menuId = 15;; // Sesuaikan dengan ID Menu Pembayaran Supplier Anda
 
 router.get("/supplier", verifyToken, checkPermission(menuId, "view"), ctrl.getSupplierOptions);
 router.get("/rekening", verifyToken, checkPermission(menuId, "view"), ctrl.getRekeningOptions);

@@ -323,6 +323,11 @@ const saveData = async (payload, username) => {
       }
     }
 
+    // Harga beli barang = harga beli bahan x qty (komposisi) + biaya non
+    // bahan (nbb); barang tanpa komposisi/nbb tidak disentuh (tetap manual).
+    const { updateHppBarang } = require("../../utils/hppBarang");
+    await updateHppBarang(conn, finalKode);
+
     await conn.commit();
     return { kode: finalKode };
   } catch (e) {

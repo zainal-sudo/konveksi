@@ -45,6 +45,20 @@ const simpanKartuStokPenjualan = async (conn, { nomor, gudang, tanggal, detail, 
       [item.brgKode, gudang, qty, hpp, nomor, tanggal, hpp]
     );
   }
+
+  // ── Baris retur (qty minus): barang masuk kembali ke gudang cabang ──
+  for (const item of detail) {
+    const qty = Number(item.qty) || 0;
+    if (qty >= 0) continue;
+    const hpp = await getHppBarang(conn, item.brgKode, gudang);
+    await conn.query(
+      `INSERT INTO tmasterstok
+         (mst_brg_kode, mst_gdg_kode, mst_stok_in, mst_stok_out,
+          mst_expired_date, mst_hargabeli, mst_noreferensi, mst_tanggal, mst_avgcost)
+       VALUES (?, ?, ?, 0, '0000-00-00', ?, ?, ?, ?)`,
+      [item.brgKode, gudang, Math.abs(qty), hpp, nomor, tanggal, hpp]
+    );
+  }
 };
 
 const getCustomerOptions = async (search = "") => {
@@ -158,6 +172,15 @@ const saveData = async (payload, user) => {
     const cardVal = Number(card) || 0;
     const piutangVal = Number(piutang) || 0;
     const totalBayar = bayarVal + voucherVal + cardVal + piutangVal;
+    // Fasilitas retur: qty minus diperbolehkan, tapi total tagihan tidak
+    // boleh minus (tidak ada uang kembali). Retur melebihi belanja harus
+    // ditambal dengan belanja barang lain.
+    if (grandTotal < 0) {
+      throw new Error(
+        `Nilai retur melebihi total belanja (${grandTotal.toLocaleString("id-ID")}). ` +
+        `Tidak boleh kembali uang — tambahkan belanja barang lain yang melebihi nilai yang di-retur.`
+      );
+    }
     if (totalBayar < grandTotal) {
       throw new Error(
         `Total pembayaran (${totalBayar.toLocaleString("id-ID")}) kurang dari total tagihan (${grandTotal.toLocaleString("id-ID")}).`
@@ -333,4 +356,161 @@ const saveData = async (payload, user) => {
   }
 };
 
-module.exports = { getCustomerOptions, getBarangOptions, getDetailForm, saveData };
+// ── SISTEM PENDING (HOLD) KASIR — porting dari kasir minimarket ───────
+// Simpan keranjang sebagai nota pending, ambil lagi saat lanjut bayar.
+// Tidak membuat nota (SO). Nomor: PND.{yymmdd}.nnnn.
+
+const savePending = async (payload, user) => {
+  const { cusKode, memo, detail } = payload;
+  if (!Array.isArray(detail) || detail.length === 0) {
+    throw new Error("Keranjang kosong — tidak ada yang bisa dipending.");
+  }
+
+  const conn = await db.getConnection();
+  await conn.beginTransaction();
+  let lockKey = null;
+  try {
+    const now = new Date();
+    const tanggal = now.toISOString().slice(0, 19).replace("T", " ");
+    const cabangKode = String(user?.cabang || "00");
+    const username = user?.username || user?.kode || "ADMIN";
+    const yy = String(now.getFullYear()).slice(2);
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    const prefix = `PND.${yy}${mm}${dd}.`;
+
+    lockKey = `nomor_pnd_${yy}${mm}${dd}`;
+    await acquireLock(conn, lockKey);
+
+    const [[maxRow]] = await conn.query(
+      `SELECT pen_nomor FROM tpending_hdr WHERE pen_nomor LIKE ? ORDER BY pen_nomor DESC LIMIT 1`,
+      [`${prefix}%`]
+    );
+    let nextNum = 1;
+    if (maxRow?.pen_nomor) {
+      nextNum = parseInt(maxRow.pen_nomor.split(".")[2], 10) + 1;
+    }
+    const noPending = `${prefix}${String(nextNum).padStart(4, "0")}`;
+
+    await conn.query(
+      `INSERT INTO tpending_hdr
+         (pen_nomor, pen_tanggal, pen_cus_kode, pen_memo, pen_amount,
+          pen_user_kasir, pen_cabang, date_create, user_create)
+       VALUES (?, NOW(), ?, ?, ?, ?, ?, NOW(), ?)`,
+      [noPending, cusKode || null, memo || "", sumPendingAmount(detail), username, cabangKode, username]
+    );
+
+    let index = 1;
+    for (const item of detail) {
+      await conn.query(
+        `INSERT INTO tpending_dtl
+           (ped_pen_nomor, ped_brg_kode, ped_brg_satuan, ped_qty, ped_harga, ped_discpr, ped_nourut)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [noPending, item.brgKode, item.satuan, item.qty, item.harga, item.discPr || 0, index]
+      );
+      index++;
+    }
+
+    await conn.commit();
+    return { nomor: noPending };
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    if (lockKey) await releaseLock(conn, lockKey);
+    conn.release();
+  }
+};
+
+const sumPendingAmount = (detail) =>
+  detail.reduce(
+    (s, d) =>
+      s + (Number(d.qty) || 0) * (Number(d.harga) || 0) * (1 - (Number(d.discPr) || 0) / 100),
+    0
+  );
+
+// Daftar nota pending (urut waktu pending DESC). Cabang login (bukan pusat)
+// hanya melihat pending milik cabangnya; pusat melihat semua.
+const getPendingList = async (user) => {
+  const cabang = String(user?.cabang || "00");
+  const params = [];
+  let where = "";
+  if (cabang !== "00") {
+    where = `WHERE h.pen_cabang = ?`;
+    params.push(cabang);
+  }
+  const [rows] = await db.query(
+    `SELECT
+        h.pen_nomor AS noPending,
+        DATE_FORMAT(h.pen_tanggal, '%d/%m/%Y %H:%i') AS tanggal,
+        IFNULL(h.pen_amount, 0) AS total,
+        IFNULL(c.cus_nama, 'UMUM') AS customer,
+        h.pen_cus_kode AS cusKode,
+        h.pen_user_kasir AS kasir,
+        (SELECT COUNT(*) FROM tpending_dtl d WHERE d.ped_pen_nomor = h.pen_nomor) AS jumlahItem
+     FROM tpending_hdr h
+     LEFT JOIN tcustomer c ON c.cus_kode = h.pen_cus_kode
+     ${where}
+     ORDER BY h.pen_tanggal DESC`,
+    params
+  );
+  return rows;
+};
+
+// Ambil nota pending: kembalikan header+detail lalu HAPUS dari antrean
+// (tidak bisa ditarik 2x — sama seperti logika UfrmKasir.pas minimarket).
+const takePending = async (noPending, user) => {
+  const conn = await db.getConnection();
+  await conn.beginTransaction();
+  try {
+    const [[header]] = await conn.query(
+      `SELECT pen_nomor, pen_cus_kode AS cusKode, pen_memo AS memo, pen_amount AS amount
+         FROM tpending_hdr WHERE pen_nomor = ?`,
+      [noPending]
+    );
+    if (!header) throw new Error("Notak pending tidak ditemukan / sudah diambil.");
+
+    const cabang = String(user?.cabang || "00");
+    if (cabang !== "00") {
+      const [[row]] = await conn.query(
+        `SELECT pen_cabang FROM tpending_hdr WHERE pen_nomor = ?`,
+        [noPending]
+      );
+      if (row?.pen_cabang && row.pen_cabang !== cabang) {
+        throw new Error("Nota pending milik cabang lain.");
+      }
+    }
+
+    const [details] = await conn.query(
+      `SELECT
+          d.ped_brg_kode AS brgKode,
+          IFNULL(b.brg_nama, '') AS brgNama,
+          b.brg_kode AS barcode,
+          IFNULL(d.ped_brg_satuan, '') AS satuan,
+          d.ped_qty AS qty,
+          d.ped_harga AS harga,
+          IFNULL(d.ped_discpr, 0) AS discPr
+       FROM tpending_dtl d
+       LEFT JOIN tbarang b ON b.brg_kode = d.ped_brg_kode
+       WHERE d.ped_pen_nomor = ?
+       ORDER BY d.ped_nourut ASC`,
+      [noPending]
+    );
+
+    await conn.query(`DELETE FROM tpending_dtl WHERE ped_pen_nomor = ?`, [noPending]);
+    await conn.query(`DELETE FROM tpending_hdr WHERE pen_nomor = ?`, [noPending]);
+
+    await conn.commit();
+    return { header, details };
+  } catch (e) {
+    await conn.rollback();
+    throw e;
+  } finally {
+    conn.release();
+  }
+};
+
+module.exports = {
+  getCustomerOptions, getBarangOptions, getDetailForm, saveData,
+  savePending, getPendingList, takePending,
+};

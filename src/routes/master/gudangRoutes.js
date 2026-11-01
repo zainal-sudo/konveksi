@@ -3,7 +3,7 @@ const router = express.Router();
 const ctrl = require("../../controllers/master/gudangController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 
-const menuId = 16; // Pastikan ID ini terdaftar di tabel menu Abang
+const menuId = 10;; // Pastikan ID ini terdaftar di tabel menu Abang
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getAll);
 router.get("/cabang", verifyToken, ctrl.getCabang);
 router.post("/save", verifyToken, checkPermission(menuId, "insert"), ctrl.saveData);

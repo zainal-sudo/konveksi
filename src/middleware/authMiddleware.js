@@ -82,6 +82,9 @@ const checkPermission = (menuId, action) => {
  */
 const PREFIX_DIIZINKAN_CABANG = [
   "/api/transaksi/penjualan", // + /form
+  "/api/transaksi/bayarCustomer", // Pembayaran Customer cabang
+  "/api/master/customer", // Master Customer cabang
+  "/api/transaksi/penyesuaian-stok", // Penyesuaian stok cabang
   "/api/transaksi/mutasi-out", // + /form
   "/api/transaksi/mutasi-in", // + /form (modul baru)
   "/api/laporan/persediaan", // Laporan persediaan cabang

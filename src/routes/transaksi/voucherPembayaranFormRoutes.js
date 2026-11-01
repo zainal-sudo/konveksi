@@ -6,7 +6,7 @@ const {
   checkPermission,
 } = require("../../middleware/authMiddleware");
 
-const menuId = 30;
+const menuId = 0;;
 
 // Static routes DULU sebelum dynamic (:nomor)
 router.get(

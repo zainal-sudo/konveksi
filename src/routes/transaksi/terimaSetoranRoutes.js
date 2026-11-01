@@ -6,7 +6,7 @@ const {
   checkPermission,
 } = require("../../middleware/authMiddleware");
 
-const menuId = 29;
+const menuId = 0;;
 
 // Dropdown cabang (dari retail.tgudang)
 router.get(

@@ -3,7 +3,10 @@ const svc = require("../../services/transaksi/penyesuaianStokFormService");
 module.exports = {
   getGudang: async (req, res) => {
     try {
-      res.json({ success: true, data: await svc.getGudang(req.query.search || "") });
+      res.json({
+        success: true,
+        data: await svc.getGudang(req.query.search || "", req.user?.cabang),
+      });
     } catch (e) {
       res.status(500).json({ success: false, message: e.message });
     }

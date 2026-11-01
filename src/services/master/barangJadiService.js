@@ -274,8 +274,15 @@ const saveBarangJadiWithKomposisi = async (data, items, username) => {
       );
     }
 
+    // Harga beli = komposisi bahan + biaya non bahan (tbarang_nbb),
+    // hitung ulang dari DB agar harga beli/HPP konsisten antara form
+    // Barang Jadi dan Master Barang.
+    const { updateHppBarang } = require("../../utils/hppBarang");
+    const hppBaru = await updateHppBarang(conn, kode);
+    const hppFinal = hppBaru === null ? hpp : hppBaru;
+
     await conn.commit();
-    return { brg_kode: kode, brg_hrgbeli: hpp, brg_hpp_terakhir: hpp };
+    return { brg_kode: kode, brg_hrgbeli: hppFinal, brg_hpp_terakhir: hppFinal };
   } catch (e) {
     await conn.rollback();
     throw e;

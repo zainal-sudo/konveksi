@@ -4,7 +4,7 @@ const ctrl = require("../../controllers/master/customerController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 
 // Gunakan menuId khusus untuk Customer (misal: 13)
-const menuId = 13;
+const menuId = 9;;
 
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getAll);
 router.get("/:kode", verifyToken, checkPermission(menuId, "view"), ctrl.getById);

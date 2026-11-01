@@ -4,7 +4,7 @@ const ctrl = require("../../controllers/master/kategoriController");
 const { verifyToken, checkPermission } = require("../../middleware/authMiddleware");
 
 // Sesuaikan menuId ini dengan database hak akses retail Anda (contoh: 10)
-const menuId = 11; 
+const menuId = 6;; 
 
 router.get("/", verifyToken, checkPermission(menuId, "view"), ctrl.getAll);
 router.get("/:kode", verifyToken, checkPermission(menuId, "view"), ctrl.getById);

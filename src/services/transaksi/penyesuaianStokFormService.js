@@ -2,14 +2,20 @@ const db = require("../../config/database");
 const { acquireLock, releaseLock } = require("../../utils/nomorLock");
 
 // ── List gudang untuk SearchModal ────────────────────────────────────────
-const getGudang = async (search = "") => {
+// User cabang hanya melihat gudang milik cabangnya (gdg_cbg_kode);
+// pusat ('00') melihat semua.
+const getGudang = async (search = "", cabang) => {
+  const isPusat = !cabang || String(cabang) === "00";
   const [rows] = await db.query(
     `SELECT gdg_kode AS kode, gdg_nama AS nama, gdg_penanggungjawab AS pj
      FROM tgudang
-     WHERE gdg_nama LIKE ? OR gdg_kode LIKE ?
+     WHERE (gdg_nama LIKE ? OR gdg_kode LIKE ?)
+       ${isPusat ? "" : "AND IFNULL(gdg_cbg_kode, '00') = ?"}
      ORDER BY gdg_kode ASC
      LIMIT 20`,
-    [`%${search}%`, `%${search}%`]
+    isPusat
+      ? [`%${search}%`, `%${search}%`]
+      : [`%${search}%`, `%${search}%`, cabang]
   );
   return rows;
 };
@@ -71,11 +77,10 @@ const getBarangByGudang = async (gdgKode, search = "") => {
            ELSE mst_expired_date
          END
      ) ms ON ms.mst_brg_kode = b.brg_kode
-     WHERE b.brg_gdg_default = ?
-       AND b.brg_isaktif = 1
+     WHERE b.brg_isaktif = 1
        AND (b.brg_nama LIKE ? OR b.brg_kode = ?)
      ORDER BY b.brg_nama ASC, ms.expired ASC`,
-    [gdgKode, gdgKode, `%${search}%`, search || 0]
+    [gdgKode, `%${search}%`, search || 0]
   );
   return rows;
 };
@@ -141,6 +146,20 @@ const saveData = async (payload, user) => {
   if (!gdgKode) throw new Error("Gudang wajib dipilih.");
   if (!Array.isArray(detail) || detail.length === 0) {
     throw new Error("Detail barang tidak boleh kosong.");
+  }
+
+  // User cabang hanya boleh menyesuaikan stok gudang milik cabangnya
+  const cabangUser = user?.cabang;
+  if (cabangUser && String(cabangUser) !== "00") {
+    const [[gdg]] = await db.query(
+      `SELECT IFNULL(gdg_cbg_kode, '00') AS cbg FROM tgudang WHERE gdg_kode = ?`,
+      [gdgKode]
+    );
+    if (!gdg || gdg.cbg !== String(cabangUser)) {
+      throw new Error(
+        "Gudang ini milik cabang lain — pilih gudang cabang Anda."
+      );
+    }
   }
 
   const conn = await db.getConnection();

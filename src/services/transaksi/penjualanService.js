@@ -149,10 +149,38 @@ const getPrintData = async (nomor) => {
     [nomor]
   );
 
+  // Header faktur per cabang: ambil dari tcabang (cbg_headerNama dll).
+  // Kode cabang diambil dari prefix nomor: "SO1." → 01, "SO." → 00.
+  // Kalau cabang tidak mengisi header, fallback ke tperusahaan.
+  const m = String(nomor).match(/^SO(\d*)\./);
+  const cbgKode = m ? (m[1] ? m[1].padStart(2, "0") : "00") : "00";
+
   const [[perusahaan]] = await db.query(
     `SELECT perush_nama, perush_alamat, perush_kota, perush_NOtelp
      FROM tperusahaan LIMIT 1`
   );
+  const [[cbg]] = await db.query(
+    `SELECT cbg_headerNama, cbg_headerAlamat, cbg_headerTelp
+       FROM tcabang WHERE cbg_kode = ?`,
+    [cbgKode]
+  );
+
+  const headerInfo =
+    cbg && (cbg.cbg_headerNama || cbg.cbg_headerAlamat || cbg.cbg_headerTelp)
+      ? {
+          nama: cbg.cbg_headerNama || perusahaan?.perush_nama || "",
+          alamat: cbg.cbg_headerAlamat || perusahaan?.perush_alamat || "",
+          kota: "",
+          notelp: cbg.cbg_headerTelp || perusahaan?.perush_NOtelp || "",
+        }
+      : perusahaan
+      ? {
+          nama: perusahaan.perush_nama,
+          alamat: perusahaan.perush_alamat,
+          kota: perusahaan.perush_kota,
+          notelp: perusahaan.perush_NOtelp,
+        }
+      : { nama: "", alamat: "", kota: "", notelp: "" };
 
   const amount = Number(header.amount);
   const taxamount = Number(header.taxamount);
@@ -196,14 +224,7 @@ const getPrintData = async (nomor) => {
     cus_nama: header.cus_nama,
     cus_alamat: header.cus_alamat,
     cus_telp: header.cus_telp,
-    perusahaan: perusahaan
-      ? {
-          nama: perusahaan.perush_nama,
-          alamat: perusahaan.perush_alamat,
-          kota: perusahaan.perush_kota,
-          notelp: perusahaan.perush_NOtelp,
-        }
-      : { nama: "", alamat: "", kota: "", notelp: "" },
+    perusahaan: headerInfo,
     detail,
   };
 };
