@@ -31,6 +31,24 @@ const detailOut = async (req, res) => {
   }
 };
 
+const hapusOut = async (req, res) => {
+  try {
+    await svcOut.deleteData(decodeURIComponent(req.params.nomor), req.user);
+    res.json({ success: true, message: "Data mutasi cabang berhasil dihapus." });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+};
+
+const printOut = async (req, res) => {
+  try {
+    const data = await svcOut.getPrintData(decodeURIComponent(req.params.nomor));
+    res.json({ success: true, data });
+  } catch (e) {
+    res.status(400).json({ success: false, message: e.message });
+  }
+};
+
 const nomorOut = async (req, res) => {
   try {
     // user cabang: nomor pakai cabangnya; pusat: wajib pilih cabang asal
@@ -173,6 +191,6 @@ const saveIn = async (req, res) => {
 };
 
 module.exports = {
-  browseOut, detailOut, nomorOut, cabangList, gudangOut, searchSKU, formOut, saveOut,
+  browseOut, detailOut, hapusOut, printOut, nomorOut, cabangList, gudangOut, searchSKU, formOut, saveOut,
   browseIn, detailIn, nomorIn, gudangIn, searchMutasiOut, loadDataMutasi, formIn, saveIn,
 };
