@@ -8,6 +8,8 @@ const db = require("../config/database");
  *   Dr {cbg_rek_kas} KAS CABANG        = so_dp     (cash diterima - kembalian)
  *   Dr 12.001 BANK                     = so_card   (card / debit)
  *   Dr {cbg_rek_piutang} PIUTANG       = so_piutang
+ *   Dr {cbg_rek_umpenjualan} U.MUKA PJ = so_umpenjualan (bayar dari deposit
+ *                                        Penerimaan Lain-Lain, so_um_nomor)
  *   Dr 21.004 POTONGAN PENJULAN        = diskon faktur + voucher
  *   Dr 23.001 BIAYA PRODUKSI           = Σ (qty keluar x HPP barang)   [HPP penjualan]
  *   Cr {cbg_rek_penjualan} PENJUALAN   = bruto barang (Σ qty x harga x disc item)
@@ -16,10 +18,10 @@ const db = require("../config/database");
  *   Cr 19.005 PPN KELUARAN       = so_taxamount (bila pajak)
  *
  * Balance terjamin dari angka sebenarnya:
- *   kas+bank+piutang = (amount+ongkir) - voucher   (=enforcer saveData)
+ *   kas+bank+piutang+um = (amount+ongkir) - voucher   (=enforcer saveData)
  *   potongan         = (bruto - (amount - tax)) + voucher
  *   hpp              = persediaan keluar (sumber sama, Dr 26.001 vs Cr 17.00x)
- *   => debit total   = amount+ongkir-voucher + bruto-amount+tax + voucher + hpp = bruto + ongkir + tax + hpp
+ *   => debit total   = amount+ongkir-voucher + um + bruto-amount+tax + voucher + hpp = bruto + ongkir + tax + hpp
  *   => kredit total  = bruto + ongkir + tax + hpp
  */
 
@@ -32,6 +34,7 @@ const REK_HPP = "26.001"; // BPP (= HPP penjualan)
 const REK_PERSEDIAAN_FALLBACK = "17.004"; // PERSEDIAAN BARANG JADI
 const REK_ONGKIR = "23.018"; // BY KIRIM
 const REK_PPN = "19.005"; // PPN KELUARAN
+const REK_UMPENJUALAN = "19.001"; // UANG MUKA PENJUALAN (deposit customer)
 
 const TIPE = "SO";
 
@@ -89,7 +92,7 @@ const writeJurnal = async (conn, { jurNo, tanggal, tipe, keterangan, user, debet
 // Mengembalikan { kas, piutang, penjualan, persediaan }; yang kosong = null
 const getCabangRek = async (conn, cabangKode) => {
   const [[c]] = await conn.query(
-    `SELECT cbg_rek_persediaan, cbg_rek_kas, cbg_rek_penjualan, cbg_rek_piutang
+    `SELECT cbg_rek_persediaan, cbg_rek_kas, cbg_rek_penjualan, cbg_rek_piutang, cbg_rek_umpenjualan
         FROM tcabang WHERE cbg_kode = ?`,
     [cabangKode]
   );
@@ -98,6 +101,7 @@ const getCabangRek = async (conn, cabangKode) => {
     piutang: String(c?.cbg_rek_piutang || "").trim() || null,
     penjualan: String(c?.cbg_rek_penjualan || "").trim() || null,
     persediaan: String(c?.cbg_rek_persediaan || "").trim() || null,
+    umPenjualan: String(c?.cbg_rek_umpenjualan || "").trim() || null,
   };
 };
 
@@ -111,7 +115,8 @@ const createAutoJurnalPenjualan = async (conn, data) => {
   const [[h]] = await conn.query(
     `SELECT so_tanggal, so_cus_kode, so_memo,
             so_amount, so_taxamount, so_ongkir,
-            so_dp, so_voucher, so_no_voucher, so_card, so_piutang
+            so_dp, so_voucher, so_no_voucher, so_card, so_piutang,
+            IFNULL(so_umpenjualan, 0) AS umPenjualan, IFNULL(so_um_nomor, '') AS umNomor
         FROM tso_hdr WHERE so_nomor = ?`,
     [nomor]
   );
@@ -124,15 +129,16 @@ const createAutoJurnalPenjualan = async (conn, data) => {
   const bank = Math.round(Number(h.so_card) || 0);
   const piutang = Math.round(Number(h.so_piutang) || 0);
   const voucher = Math.round(Number(h.so_voucher) || 0);
+  const umPenjualan = Math.round(Number(h.umPenjualan) || 0);
 
-  // Bruto barang = nilai barang sebelum diskon faktur (uang muka a.k.a. potongan)
+  // Bruto barang = nilai barang sebelum diskon faktur
   const [[dt]] = await conn.query(
     `SELECT ROUND(COALESCE(SUM(sod_qty * (sod_harga * (100 - IFNULL(sod_discpr, 0)) / 100)), 0)) AS bruto
         FROM tso_dtl WHERE sod_so_nomor = ?`,
     [nomor]
   );
   const bruto = Math.round(Number(dt?.bruto) || 0);
-  if (bruto <= 0 && kas <= 0 && bank <= 0 && piutang <= 0) return null;
+  if (bruto <= 0 && kas <= 0 && bank <= 0 && piutang <= 0 && umPenjualan <= 0) return null;
 
   // Diskon faktur yang benar-benar diterapkan = bruto - (amount setelah pajak dipisah)
   const potongan = Math.max(0, bruto - Math.max(0, amount - tax)) + voucher;
@@ -146,6 +152,7 @@ const createAutoJurnalPenjualan = async (conn, data) => {
   const rekKasCabang = cabRek.kas || REK_KAS;
   const rekPiutangCabang = cabRek.piutang || REK_PIUTANG;
   const rekPenjualanCabang = cabRek.penjualan || REK_PENJUALAN;
+  const rekUmPenjualanCabang = cabRek.umPenjualan || REK_UMPENJUALAN;
   const rekPersediaanCabang = cabRek.persediaan;
 
   // ── HPP penjualan: dari baris stok-keluar milik nota ini ──
@@ -176,6 +183,11 @@ const createAutoJurnalPenjualan = async (conn, data) => {
     { rek: rekKasCabang, ket: `Kas tunai penjualan ${nomor} - ${cusNama}`, nilai: kas },
     { rek: REK_BANK, ket: `Card pembayaran ${nomor}`, nilai: bank },
     { rek: rekPiutangCabang, ket: `Piutang penjualan ${nomor} - ${cusNama}`, nilai: piutang },
+    {
+      rek: rekUmPenjualanCabang,
+      ket: `Pakai uang muka ${h.umNomor || ""} penjualan ${nomor} - ${cusNama}`.trim(),
+      nilai: umPenjualan,
+    },
     {
       rek: REK_POTONGAN,
       ket: `Potongan penjualan ${nomor}${voucher ? ` (voucher ${h.so_no_voucher || ""})` : ""}`,
@@ -215,6 +227,7 @@ module.exports = {
   REK_PENJUALAN,
   REK_ONGKIR,
   REK_PPN,
+  REK_UMPENJUALAN,
   createAutoJurnalPenjualan,
   deleteAutoJurnalPenjualan,
 };

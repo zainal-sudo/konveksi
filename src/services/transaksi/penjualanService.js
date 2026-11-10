@@ -117,6 +117,8 @@ const getPrintData = async (nomor) => {
       IFNULL(h.so_no_card, '') AS no_card,
       IFNULL(h.so_bank_card, '') AS bank_card,
       IFNULL(h.so_piutang, 0) AS piutang,
+      IFNULL(h.so_umpenjualan, 0) AS umpenjualan,
+      IFNULL(h.so_um_nomor, '') AS um_nomor,
       IFNULL(h.so_istax, 0) AS istax,
       IFNULL(h.so_disc_faktur, 0) AS disc_faktur,
       IFNULL(h.so_disc_fakturpr, 0) AS disc_fakturpr,

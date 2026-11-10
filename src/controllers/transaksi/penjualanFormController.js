@@ -15,6 +15,21 @@ module.exports = {
       res.status(500).json({ success: false, message: e.message });
     }
   },
+  getUangMukaOptions: async (req, res) => {
+    try {
+      res.json({
+        success: true,
+        data: await svc.getUangMukaOptions(
+          req.query.cusKode || "",
+          req.query.search || "",
+          req.query.excludeNomor || "",
+          req.user?.cabang || "00"
+        ),
+      });
+    } catch (e) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  },
   getDetailForm: async (req, res) => {
     try {
       res.json({ success: true, data: await svc.getDetailForm(req.params.nomor) });

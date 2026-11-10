@@ -70,6 +70,7 @@ const persediaanRoutes = require("./routes/laporan/persediaanRoutes");
 const penjualanItemRoutes = require("./routes/laporan/penjualanItemRoutes");
 const hutangRoutes = require("./routes/laporan/hutangRoutes");
 const harianRoutes = require("./routes/laporan/harianRoutes");
+const bukuPembantuUmRoutes = require("./routes/laporan/bukuPembantuUmRoutes");
 
 
 const app = express();
@@ -176,6 +177,7 @@ app.use("/api/laporan/persediaan", persediaanRoutes);
 app.use("/api/laporan/penjualanitem", penjualanItemRoutes);
 app.use("/api/laporan/hutang", hutangRoutes);
 app.use("/api/laporan/harian", harianRoutes);
+app.use("/api/laporan/buku-pembantu-um", bukuPembantuUmRoutes);
 app.use("/api/laporan/akunting", require("./routes/laporan/neracaLabRugiRoutes"));
 
 // ── Health check ──

@@ -89,6 +89,68 @@ const getBarangOptions = async (search = "") => {
   return rows;
 };
 
+// ── Daftar Uang Muka customer (dari Penerimaan Lain-Lain) ─────────────
+// Sumber: detail jurnal 'Penerimaan Lain' di database konveksi yang baris
+// kreditnya memakai akun UANG MUKA PENJUALAN (tcabang.cbg_rek_umpenjualan,
+// fallback 19.001) DAN customer-nya sama dengan customer nota penjualan.
+// Sisa = nilai deposit dikurangi yang sudah dipakai nota lain
+// (tso_hdr.so_um_nomor). Nomor nota yang sedang diedit dikecualikan agar
+// sisa tidak dipotong dua kali.
+const REK_UMPENJUALAN = "19.001"; // UANG MUKA PENJUALAN (fallback bila cabang belum setting)
+const getUangMukaOptions = async (cusKode, search = "", excludeNomor = "", cabang = "00") => {
+  if (!cusKode) return [];
+
+  // Akun uang muka penjualan sesuai setting jurnal penjualan cabang
+  const [[cbg]] = await db.query(
+    `SELECT cbg_rek_umpenjualan FROM tcabang WHERE cbg_kode = ?`,
+    [String(cabang || "00")]
+  );
+  const rekUm = String(cbg?.cbg_rek_umpenjualan || "").trim() || REK_UMPENJUALAN;
+
+  // Urutan sesuai posisi placeholder di SQL:
+  //   1) IFNULL(?, '') subquery TERPAKAI (di SELECT list, muncul dulu)
+  //   2) jurd_cus_kode = ?  (customer nota)
+  //   3) jurd_rek_kode = ?  (akun uang muka penjualan)
+  const params = [String(excludeNomor || ""), String(cusKode), rekUm];
+  let where = `
+       j.jur_tipetransaksi = 'Penerimaan Lain'
+       AND j.jur_isclosed = 0
+       AND d.jurd_kredit > 0
+       AND d.jurd_cus_kode = ?
+       AND d.jurd_rek_kode = ?`;
+  if (search && String(search).trim()) {
+    where += ` AND (j.jur_no LIKE ? OR IFNULL(j.jur_keterangan, '') LIKE ?)`;
+    params.push(`%${search}%`, `%${search}%`);
+  }
+  const [rows] = await db.query(
+    `SELECT
+        j.jur_no AS nomor,
+        DATE_FORMAT(j.jur_tanggal, '%Y-%m-%d') AS tanggal,
+        IFNULL(j.jur_keterangan, '') AS keterangan,
+        d.jurd_rek_kode AS rek,
+        IFNULL(r.rek_nama, '') AS rekNama,
+        IFNULL(d.jurd_cus_kode, '') AS cusKode,
+        (SELECT c.cus_nama FROM tcustomer c WHERE c.cus_kode = d.jurd_cus_kode) AS cusNama,
+        d.jurd_kredit AS nilai,
+        IFNULL((SELECT SUM(h2.so_umpenjualan) FROM tso_hdr h2
+                WHERE h2.so_um_nomor = d.jurd_jur_no
+                  AND h2.so_nomor <> IFNULL(?, '')), 0) AS terpakai
+     FROM tjurnalitem d
+     INNER JOIN tjurnal j ON j.jur_no = d.jurd_jur_no
+     LEFT JOIN trekening r ON r.rek_kode = d.jurd_rek_kode
+     WHERE ${where}
+      ORDER BY j.jur_tanggal DESC, j.jur_no DESC
+     LIMIT 50`,
+    params
+  );
+  return rows.map((x) => ({
+    ...x,
+    nilai: Number(x.nilai) || 0,
+    terpakai: Number(x.terpakai) || 0,
+    sisa: (Number(x.nilai) || 0) - (Number(x.terpakai) || 0),
+  }));
+};
+
 const getDetailForm = async (nomor) => {
   const [[h]] = await db.query(
     `SELECT so_nomor AS nomor, DATE_FORMAT(so_tanggal, '%Y-%m-%d') AS tanggal,
@@ -104,6 +166,7 @@ const getDetailForm = async (nomor) => {
             IFNULL(so_voucher, 0) AS voucher, IFNULL(so_no_voucher, '') AS noVoucher,
             IFNULL(so_card, 0) AS card, IFNULL(so_no_card, '') AS noCard, IFNULL(so_bank_card, '') AS bankCard,
             IFNULL(so_piutang, 0) AS piutang,
+            IFNULL(so_umpenjualan, 0) AS umPenjualan, IFNULL(so_um_nomor, '') AS umNomor,
             DATE_FORMAT(so_dateline, '%Y-%m-%d') AS dateline, so_pemesan AS pemesan
      FROM tso_hdr WHERE so_nomor = ?`,
     [nomor]
@@ -148,6 +211,8 @@ const saveData = async (payload, user) => {
       noCard,
       bankCard,
       piutang,
+      umPenjualan,
+      umNomor,
       dateline,
       pemesan,
       detail,
@@ -171,7 +236,67 @@ const saveData = async (payload, user) => {
     const voucherVal = Number(voucher) || 0;
     const cardVal = Number(card) || 0;
     const piutangVal = Number(piutang) || 0;
-    const totalBayar = bayarVal + voucherVal + cardVal + piutangVal;
+    const umVal = Number(umPenjualan) || 0;
+    const umNomorVal = String(umNomor || "").trim();
+    const totalBayar = bayarVal + voucherVal + cardVal + piutangVal + umVal;
+
+    // ── Uang Muka (Penerimaan Lain-Lain) harus dipilih lewat tombol search ──
+    if (umVal !== 0) {
+      if (!umNomorVal) {
+        throw new Error("Uang muka harus dipilih lewat tombol search (nomor penerimaan lain-lain wajib).");
+      }
+      const [[umRow]] = await conn.query(
+        `SELECT jurd_cus_kode, jurd_rek_kode FROM tjurnalitem
+          WHERE jurd_jur_no = ? AND jurd_kredit > 0 LIMIT 1`,
+        [umNomorVal]
+      );
+      if (!umRow) {
+        throw new Error(`Nomor penerimaan lain-lain ${umNomorVal} tidak ditemukan.`);
+      }
+      // Baris kredit deposit harus memakai akun UANG MUKA PENJUALAN sesuai
+      // setting jurnal penjualan cabang (fallback 19.001)
+      const [[cbgUm]] = await conn.query(
+        `SELECT cbg_rek_umpenjualan FROM tcabang WHERE cbg_kode = ?`,
+        [String(user?.cabang || "00")]
+      );
+      const rekUmSetting = String(cbgUm?.cbg_rek_umpenjualan || "").trim() || REK_UMPENJUALAN;
+      if (String(umRow.jurd_rek_kode || "").trim() !== rekUmSetting) {
+        throw new Error(
+          `Uang muka ${umNomorVal} bukan deposit akun Uang Muka Penjualan (${rekUmSetting}).`
+        );
+      }
+      // Customer dari penerimaan lain harus sama dengan customer nota
+      const umCus = String(umRow.jurd_cus_kode || "").trim();
+      if (umCus && umCus !== String(cusKode)) {
+        throw new Error(
+          `Uang muka ${umNomorVal} milik customer ${umCus}, tidak boleh dipakai untuk ${cusKode}.`
+        );
+      }
+      // Nilai uang muka tidak boleh melebihi sisa deposit yang belum dipakai
+      const [[umAvail]] = await conn.query(
+        `SELECT d.jurd_kredit AS nilai,
+                IFNULL((SELECT SUM(h2.so_umpenjualan) FROM tso_hdr h2
+                        WHERE h2.so_um_nomor = d.jurd_jur_no AND h2.so_nomor <> ?), 0) AS terpakai
+           FROM tjurnalitem d
+          WHERE d.jurd_jur_no = ? AND d.jurd_kredit > 0 LIMIT 1`,
+        [actualNomor || "", umNomorVal]
+      );
+      const sisa = Math.round((Number(umAvail?.nilai) || 0) - (Number(umAvail?.terpakai) || 0));
+      if (umVal > sisa) {
+        throw new Error(
+          `Nilai uang muka (${umVal.toLocaleString("id-ID")}) melebihi sisa deposit ${umNomorVal} (${sisa.toLocaleString("id-ID")}).`
+        );
+      }
+      // Uang muka hanya untuk customer terdaftar (bukan UMUM) — sama seperti piutang
+      const [[cus]] = await conn.query(
+        `SELECT cus_nama FROM tcustomer WHERE cus_kode = ?`,
+        [cusKode]
+      );
+      const nama = String(cus?.cus_nama || "").toLowerCase();
+      if (cusKode === "PU" || nama.includes("umum")) {
+        throw new Error("Pembayaran UANG MUKA tidak boleh untuk customer UMUM. Pilih customer terlebih dahulu.");
+      }
+    }
     // Fasilitas retur: qty minus diperbolehkan, tapi total tagihan tidak
     // boleh minus (tidak ada uang kembali). Retur melebihi belanja harus
     // ditambal dengan belanja barang lain.
@@ -216,6 +341,7 @@ const saveData = async (payload, user) => {
         `UPDATE tso_hdr SET so_tanggal=?, so_cus_kode=?, so_memo=?, so_istax=?, so_disc_fakturpr=?, so_disc_faktur=?,
                             so_amount=?, so_taxamount=?, so_ongkir=?, so_bayar=?, so_kembali=?, so_dp=?,
                             so_voucher=?, so_no_voucher=?, so_card=?, so_no_card=?, so_bank_card=?, so_piutang=?,
+                            so_umpenjualan=?, so_um_nomor=?,
                             date_modified=?, user_modified=?, so_dateline=?, so_pemesan=?
          WHERE so_nomor=?`,
         [
@@ -237,6 +363,8 @@ const saveData = async (payload, user) => {
           noCard || "",
           bankCard || "",
           piutangVal,
+          umVal,
+          umNomorVal,
           now,
           username,
           dateline || null,
@@ -281,8 +409,9 @@ const saveData = async (payload, user) => {
         `INSERT INTO tso_hdr (so_nomor, so_tanggal, so_cus_kode, so_memo, so_istax, so_disc_fakturpr, so_disc_faktur,
                                so_amount, so_taxamount, so_ongkir, so_bayar, so_kembali, so_dp,
                                so_voucher, so_no_voucher, so_card, so_no_card, so_bank_card, so_piutang,
+                               so_umpenjualan, so_um_nomor,
                                date_create, user_create, so_dateline, so_pemesan, so_user_kasir)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           actualNomor,
           tanggal,
@@ -303,6 +432,8 @@ const saveData = async (payload, user) => {
           noCard || "",
           bankCard || "",
           piutangVal,
+          umVal,
+          umNomorVal,
           now,
           username,
           dateline || null,
@@ -511,6 +642,6 @@ const takePending = async (noPending, user) => {
 };
 
 module.exports = {
-  getCustomerOptions, getBarangOptions, getDetailForm, saveData,
+  getCustomerOptions, getBarangOptions, getUangMukaOptions, getDetailForm, saveData,
   savePending, getPendingList, takePending,
 };
