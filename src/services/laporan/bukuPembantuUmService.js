@@ -6,11 +6,13 @@ const db = require("../../config/database");
  *
  * MASUK : kredit akun Uang Muka (tcabang.cbg_rek_umpenjualan / 19.001)
  *         pada jurnal jur_tipetransaksi = 'Penerimaan Lain' ber-customer.
- * PAKAI : tso_hdr.so_umpenjualan (nota yang memakai uang muka, so_um_nomor).
+ * PAKAI : tso_um_dtl (pemakaian deposit per nota, bisa lebih dari satu);
+ *         fallback data lama: tso_hdr.so_umpenjualan + so_um_nomor.
  *
  * Saldo awal customer = total MASUK sebelum startDate dikurangi
  * total PAKAI sebelum startDate. User pusat ("00") melihat semua cabang;
- * user cabang hanya prefix nomor miliknya.
+ * user cabang hanya deposit ber-jurnal prefix miliknya (MASUK dan PAKAI
+ * sama-sama mengikuti nomor jurnal deposit, bukan nomor nota SO).
  */
 const REK_UMPENJUALAN = "19.001";
 
@@ -20,12 +22,6 @@ const getRekUmCabang = async (cabang) => {
     [cabang || "00"],
   );
   return String(cbg?.cbg_rek_umpenjualan || "").trim() || REK_UMPENJUALAN;
-};
-
-// Prefix nomor nota SO: SO. = pusat, SO01./SO02. = cabang 01/02
-const soPrefixCabang = (cabang) => {
-  const digits = (String(cabang || "00").match(/\d+/) || ["0"])[0];
-  return `SO${Number(digits)}.`;
 };
 
 const getData = async ({ startDate, endDate, cusKode, cabang }) => {
@@ -61,29 +57,62 @@ const getData = async ({ startDate, endDate, cusKode, cabang }) => {
   depSql += ` ORDER BY j.jur_tanggal, j.jur_no`;
 
   // ── PAKAI: pemakaian uang muka pada nota penjualan ──
+  // Sumber kebenaran tso_um_dtl (1 nota bisa pakai beberapa deposit);
+  // fallback data lama yang belum termigrasi (kolom lama tso_hdr.so_um_nomor).
   let usoSql = `
     SELECT
-      DATE_FORMAT(so_tanggal, '%Y-%m-%d') AS tanggal,
-      so_nomor AS nomor,
-      CONCAT('Pakai Uang Muka ', so_um_nomor,
-        IF(IFNULL(so_memo, '') <> '', CONCAT(' — ', so_memo), '')) AS keterangan,
-      so_umpenjualan AS nilai,
-      so_cus_kode AS cusKode,
+      DATE_FORMAT(h.so_tanggal, '%Y-%m-%d') AS tanggal,
+      h.so_nomor AS nomor,
+      CONCAT('Pakai Uang Muka ', u.so_umd_jur_no,
+        IF(IFNULL(h.so_memo, '') <> '', CONCAT(' — ', h.so_memo), '')) AS keterangan,
+      u.so_umd_nilai AS nilai,
+      h.so_cus_kode AS cusKode,
       (SELECT c.Cus_nama FROM tcustomer c
-        WHERE c.Cus_kode = so_cus_kode LIMIT 1) AS cusNama
-    FROM tso_hdr
-    WHERE IFNULL(so_umpenjualan, 0) > 0
-      AND IFNULL(so_um_nomor, '') <> ''`;
+        WHERE c.Cus_kode = h.so_cus_kode LIMIT 1) AS cusNama
+      FROM tso_um_dtl u
+      INNER JOIN tso_hdr h ON h.so_nomor = u.so_umd_so_nomor
+     WHERE u.so_umd_nilai > 0`;
   const usoParams = [];
   if (cusFilter) {
-    usoSql += ` AND so_cus_kode = ?`;
+    usoSql += ` AND h.so_cus_kode = ?`;
     usoParams.push(cusFilter);
   }
   if (cabangFilter && cabangFilter !== "00") {
-    usoSql += ` AND so_nomor LIKE ?`;
-    usoParams.push(`${soPrefixCabang(cabangFilter)}%`);
+    // PAKAI mengikuti jurnal DEPOSIT (so_umd_jur_no), bukan prefix nota SO:
+    // deposit cabang bisa dipakai nota cabang lain, dan pemakaian itu tetap
+    // harus mengurangi saldo agar konsisten dengan GET DP.
+    usoSql += ` AND u.so_umd_jur_no LIKE ?`;
+    usoParams.push(`${cabangFilter}-%`);
   }
-  usoSql += ` ORDER BY so_tanggal, so_nomor`;
+  usoSql += `
+    UNION ALL
+    SELECT
+      DATE_FORMAT(x.tgl2, '%Y-%m-%d') AS tanggal,
+      x.nomor2 AS nomor,
+      CONCAT('Pakai Uang Muka ', x.jur2,
+        IF(IFNULL(x.memo2, '') <> '', CONCAT(' — ', x.memo2), '')) AS keterangan,
+      x.nilai2 AS nilai,
+      x.cus2 AS cusKode,
+      (SELECT c.Cus_nama FROM tcustomer c
+        WHERE c.Cus_kode = x.cus2 LIMIT 1) AS cusNama
+      FROM (SELECT so_nomor AS nomor2, so_um_nomor AS jur2,
+                   so_umpenjualan AS nilai2, so_tanggal AS tgl2,
+                   so_memo AS memo2, so_cus_kode AS cus2
+              FROM tso_hdr
+             WHERE IFNULL(so_umpenjualan, 0) > 0
+               AND IFNULL(so_um_nomor, '') <> ''
+               AND NOT EXISTS (SELECT 1 FROM tso_um_dtl u2
+                                WHERE u2.so_umd_so_nomor = tso_hdr.so_nomor)) x
+     WHERE x.nilai2 > 0`;
+  if (cusFilter) {
+    usoSql += ` AND x.cus2 = ?`;
+    usoParams.push(cusFilter);
+  }
+  if (cabangFilter && cabangFilter !== "00") {
+    usoSql += ` AND x.jur2 LIKE ?`;
+    usoParams.push(`${cabangFilter}-%`);
+  }
+  usoSql += ` ORDER BY tanggal, nomor`;
 
   const [[depRows], [usoRows]] = await Promise.all([
     db.query(depSql, depParams),

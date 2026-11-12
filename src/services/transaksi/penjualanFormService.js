@@ -108,16 +108,28 @@ const getUangMukaOptions = async (cusKode, search = "", excludeNomor = "", caban
   const rekUm = String(cbg?.cbg_rek_umpenjualan || "").trim() || REK_UMPENJUALAN;
 
   // Urutan sesuai posisi placeholder di SQL:
-  //   1) IFNULL(?, '') subquery TERPAKAI (di SELECT list, muncul dulu)
-  //   2) jurd_cus_kode = ?  (customer nota)
-  //   3) jurd_rek_kode = ?  (akun uang muka penjualan)
-  const params = [String(excludeNomor || ""), String(cusKode), rekUm];
+  //   1) IFNULL(?, '') exclude nota (subquery TERPAKAI dari tso_um_dtl)
+  //   2) IFNULL(?, '') exclude nota (subquery TERPAKAI kolom lama tso_hdr)
+  //   3) jurd_cus_kode = ?  (customer nota)
+  //   4) jurd_rek_kode = ?  (akun uang muka penjualan)
+  const params = [
+    String(excludeNomor || ""),
+    String(excludeNomor || ""),
+    String(cusKode),
+    rekUm,
+  ];
   let where = `
        j.jur_tipetransaksi = 'Penerimaan Lain'
        AND j.jur_isclosed = 0
        AND d.jurd_kredit > 0
        AND d.jurd_cus_kode = ?
        AND d.jurd_rek_kode = ?`;
+  // Deposit hanya milik cabang user (nomor jurnal ber-prefix cabang,
+  // mis. "01-KM.2611.0001"); pusat (00) melihat semua cabang.
+  if (String(cabang || "00").trim() !== "00") {
+    where += ` AND j.jur_no LIKE ?`;
+    params.push(`${String(cabang).trim()}-%`);
+  }
   if (search && String(search).trim()) {
     where += ` AND (j.jur_no LIKE ? OR IFNULL(j.jur_keterangan, '') LIKE ?)`;
     params.push(`%${search}%`, `%${search}%`);
@@ -132,9 +144,15 @@ const getUangMukaOptions = async (cusKode, search = "", excludeNomor = "", caban
         IFNULL(d.jurd_cus_kode, '') AS cusKode,
         (SELECT c.cus_nama FROM tcustomer c WHERE c.cus_kode = d.jurd_cus_kode) AS cusNama,
         d.jurd_kredit AS nilai,
-        IFNULL((SELECT SUM(h2.so_umpenjualan) FROM tso_hdr h2
-                WHERE h2.so_um_nomor = d.jurd_jur_no
-                  AND h2.so_nomor <> IFNULL(?, '')), 0) AS terpakai
+        (SELECT COALESCE((SELECT SUM(u.so_umd_nilai) FROM tso_um_dtl u
+                           WHERE u.so_umd_jur_no = d.jurd_jur_no
+                             AND u.so_umd_so_nomor <> IFNULL(?, '')), 0)
+               + COALESCE((SELECT SUM(h2.so_umpenjualan) FROM tso_hdr h2
+                           WHERE h2.so_um_nomor = d.jurd_jur_no
+                             AND h2.so_nomor <> IFNULL(?, '')
+                             AND NOT EXISTS (SELECT 1 FROM tso_um_dtl u2
+                                              WHERE u2.so_umd_so_nomor = h2.so_nomor)), 0)
+         ) AS terpakai
      FROM tjurnalitem d
      INNER JOIN tjurnal j ON j.jur_no = d.jurd_jur_no
      LEFT JOIN trekening r ON r.rek_kode = d.jurd_rek_kode
@@ -149,6 +167,46 @@ const getUangMukaOptions = async (cusKode, search = "", excludeNomor = "", caban
     terpakai: Number(x.terpakai) || 0,
     sisa: (Number(x.nilai) || 0) - (Number(x.terpakai) || 0),
   }));
+};
+
+// ── GET DP: alokasi otomatis (FIFO) deposit customer untuk satu nota ──
+// Semua deposit milik customer yang masih punya sisa, dipakai urut dari
+// yang terlama sampai target tercapai (satu nota boleh memotong lebih
+// dari satu deposit). Jika total sisa < target, semua saldo tetap dipakai
+// dan sisanya harus ditutup jalur pembayaran lain (tunai/card/piutang).
+const getCustomerDp = async (cusKode, target = 0, excludeNomor = "", cabang = "00") => {
+  const list = await getUangMukaOptions(cusKode, "", excludeNomor, cabang);
+  const avail = list
+    .filter((x) => x.sisa > 0)
+    .sort((a, b) =>
+      String(a.tanggal).localeCompare(String(b.tanggal)) ||
+      String(a.nomor).localeCompare(String(b.nomor))
+    );
+  const totalSisa = avail.reduce((s, x) => s + x.sisa, 0);
+  const targetVal = Math.max(0, Math.round(Number(target) || 0));
+
+  const alokasi = [];
+  let sisaTarget = targetVal;
+  for (const x of avail) {
+    if (sisaTarget <= 0) break;
+    const pakai = Math.min(x.sisa, sisaTarget);
+    alokasi.push({
+      nomor: x.nomor,
+      tanggal: x.tanggal,
+      keterangan: x.keterangan,
+      nilai: x.nilai,
+      sisa: x.sisa,
+      alokasi: pakai,
+    });
+    sisaTarget -= pakai;
+  }
+
+  return {
+    totalSisa,
+    kurang: Math.max(0, targetVal - totalSisa),
+    alokasi,
+    list,
+  };
 };
 
 const getDetailForm = async (nomor) => {
@@ -183,7 +241,17 @@ const getDetailForm = async (nomor) => {
     [nomor]
   );
 
+  // Detail pemakaian uang muka (Get DP) — bisa beberapa deposit per nota
+  const [umDtl] = await db.query(
+    `SELECT so_umd_jur_no AS jurNo, so_umd_nilai AS nilai
+       FROM tso_um_dtl
+      WHERE so_umd_so_nomor = ?
+      ORDER BY so_umd_nourut ASC`,
+    [nomor]
+  );
+
   h.detail = detail;
+  h.umDetail = umDtl;
   return h;
 };
 
@@ -213,6 +281,7 @@ const saveData = async (payload, user) => {
       piutang,
       umPenjualan,
       umNomor,
+      umDetail,
       dateline,
       pemesan,
       detail,
@@ -238,54 +307,84 @@ const saveData = async (payload, user) => {
     const piutangVal = Number(piutang) || 0;
     const umVal = Number(umPenjualan) || 0;
     const umNomorVal = String(umNomor || "").trim();
-    const totalBayar = bayarVal + voucherVal + cardVal + piutangVal + umVal;
+    // ── Uang muka bisa LEBIH DARI SATU deposit per nota (Get DP) ──
+    // umDetail = [{ jurNo, nilai }, ...] dari alokasi Get DP / pilihan modal.
+    // Kompatibilitas lama: kalau hanya umPenjualan + umNomor, dibungkus 1 baris.
+    let umDetailRows = (Array.isArray(umDetail) ? umDetail : [])
+      .map((d) => ({
+        jurNo: String(d?.jurNo ?? d?.nomor ?? "").trim(),
+        nilai: Math.round(Number(d?.nilai) || 0),
+      }))
+      .filter((d) => d.jurNo && d.nilai !== 0);
+    if (umDetailRows.length === 0 && umVal !== 0 && umNomorVal) {
+      umDetailRows = [{ jurNo: umNomorVal, nilai: Math.round(umVal) }];
+    }
+    const umValEff = umDetailRows.reduce((s, d) => s + d.nilai, 0);
+    const umNomorHdr = umDetailRows.length ? umDetailRows[0].jurNo : umNomorVal;
+    const totalBayar = bayarVal + voucherVal + cardVal + piutangVal + umValEff;
 
-    // ── Uang Muka (Penerimaan Lain-Lain) harus dipilih lewat tombol search ──
-    if (umVal !== 0) {
-      if (!umNomorVal) {
-        throw new Error("Uang muka harus dipilih lewat tombol search (nomor penerimaan lain-lain wajib).");
+    // ── Uang Muka (Get DP — bisa beberapa deposit per nota) ─────────────
+    // Tiap deposit sumber harus: ada, milik customer nota, akun akun
+    // UANG MUKA PENJUALAN cabang, dan pemakaiannya tidak melebihi sisa.
+    if (umValEff !== 0 || umDetailRows.length > 0) {
+      if (umDetailRows.length === 0) {
+        throw new Error("Uang muka harus dipilih lewat tombol GET DP (nomor penerimaan lain-lain wajib).");
       }
-      const [[umRow]] = await conn.query(
-        `SELECT jurd_cus_kode, jurd_rek_kode FROM tjurnalitem
-          WHERE jurd_jur_no = ? AND jurd_kredit > 0 LIMIT 1`,
-        [umNomorVal]
-      );
-      if (!umRow) {
-        throw new Error(`Nomor penerimaan lain-lain ${umNomorVal} tidak ditemukan.`);
-      }
-      // Baris kredit deposit harus memakai akun UANG MUKA PENJUALAN sesuai
-      // setting jurnal penjualan cabang (fallback 19.001)
+      // Akun uang muka penjualan sesuai setting jurnal penjualan cabang
+      // (fallback 19.001)
       const [[cbgUm]] = await conn.query(
         `SELECT cbg_rek_umpenjualan FROM tcabang WHERE cbg_kode = ?`,
         [String(user?.cabang || "00")]
       );
       const rekUmSetting = String(cbgUm?.cbg_rek_umpenjualan || "").trim() || REK_UMPENJUALAN;
-      if (String(umRow.jurd_rek_kode || "").trim() !== rekUmSetting) {
-        throw new Error(
-          `Uang muka ${umNomorVal} bukan deposit akun Uang Muka Penjualan (${rekUmSetting}).`
+      for (const row of umDetailRows) {
+        const [[umRow]] = await conn.query(
+          `SELECT jurd_cus_kode, jurd_rek_kode, jurd_kredit AS nilai FROM tjurnalitem
+            WHERE jurd_jur_no = ? AND jurd_kredit > 0 LIMIT 1`,
+          [row.jurNo]
         );
-      }
-      // Customer dari penerimaan lain harus sama dengan customer nota
-      const umCus = String(umRow.jurd_cus_kode || "").trim();
-      if (umCus && umCus !== String(cusKode)) {
-        throw new Error(
-          `Uang muka ${umNomorVal} milik customer ${umCus}, tidak boleh dipakai untuk ${cusKode}.`
+        if (!umRow) {
+          throw new Error(`Nomor penerimaan lain-lain ${row.jurNo} tidak ditemukan.`);
+        }
+        // Deposit DP hanya boleh dipakai nota cabang yang sama dengan
+        // jurnal depositnya (nomor jurnal ber-prefix cabang); pusat bebas.
+        const cabangUser = String(user?.cabang || "00").trim();
+        if (cabangUser !== "00" && !row.jurNo.startsWith(`${cabangUser}-`)) {
+          throw new Error(
+            `Uang muka ${row.jurNo} bukan deposit cabang ${cabangUser}, tidak boleh dipakai di nota ini.`
+          );
+        }
+        if (String(umRow.jurd_rek_kode || "").trim() !== rekUmSetting) {
+          throw new Error(
+            `Uang muka ${row.jurNo} bukan deposit akun Uang Muka Penjualan (${rekUmSetting}).`
+          );
+        }
+        // Customer dari penerimaan lain harus sama dengan customer nota
+        const umCus = String(umRow.jurd_cus_kode || "").trim();
+        if (umCus && umCus !== String(cusKode)) {
+          throw new Error(
+            `Uang muka ${row.jurNo} milik customer ${umCus}, tidak boleh dipakai untuk ${cusKode}.`
+          );
+        }
+        // Nilai per deposit tidak boleh melebihi sisa deposit yang belum
+        // dipakai nota lain (pemakaian dihitung dari tabel detail + fallback
+        // kolom lama tso_hdr.so_um_nomor)
+        const [[umAvail]] = await conn.query(
+          `SELECT COALESCE((SELECT SUM(u.so_umd_nilai) FROM tso_um_dtl u
+                              WHERE u.so_umd_jur_no = ? AND u.so_umd_so_nomor <> IFNULL(?, '')), 0)
+                 + COALESCE((SELECT SUM(h2.so_umpenjualan) FROM tso_hdr h2
+                              WHERE h2.so_um_nomor = ? AND h2.so_nomor <> IFNULL(?, '')
+                                AND NOT EXISTS (SELECT 1 FROM tso_um_dtl u2
+                                                 WHERE u2.so_umd_so_nomor = h2.so_nomor)), 0)
+                  AS terpakai`,
+          [row.jurNo, actualNomor || "", row.jurNo, actualNomor || ""]
         );
-      }
-      // Nilai uang muka tidak boleh melebihi sisa deposit yang belum dipakai
-      const [[umAvail]] = await conn.query(
-        `SELECT d.jurd_kredit AS nilai,
-                IFNULL((SELECT SUM(h2.so_umpenjualan) FROM tso_hdr h2
-                        WHERE h2.so_um_nomor = d.jurd_jur_no AND h2.so_nomor <> ?), 0) AS terpakai
-           FROM tjurnalitem d
-          WHERE d.jurd_jur_no = ? AND d.jurd_kredit > 0 LIMIT 1`,
-        [actualNomor || "", umNomorVal]
-      );
-      const sisa = Math.round((Number(umAvail?.nilai) || 0) - (Number(umAvail?.terpakai) || 0));
-      if (umVal > sisa) {
-        throw new Error(
-          `Nilai uang muka (${umVal.toLocaleString("id-ID")}) melebihi sisa deposit ${umNomorVal} (${sisa.toLocaleString("id-ID")}).`
-        );
+        const sisa = Math.round((Number(umRow.nilai) || 0) - (Number(umAvail?.terpakai) || 0));
+        if (row.nilai > sisa) {
+          throw new Error(
+            `Pemakaian uang muka ${row.jurNo} (${row.nilai.toLocaleString("id-ID")}) melebihi sisa deposit ${row.jurNo} (${sisa.toLocaleString("id-ID")}).`
+          );
+        }
       }
       // Uang muka hanya untuk customer terdaftar (bukan UMUM) — sama seperti piutang
       const [[cus]] = await conn.query(
@@ -363,8 +462,8 @@ const saveData = async (payload, user) => {
           noCard || "",
           bankCard || "",
           piutangVal,
-          umVal,
-          umNomorVal,
+          umValEff,
+          umNomorHdr,
           now,
           username,
           dateline || null,
@@ -432,8 +531,8 @@ const saveData = async (payload, user) => {
           noCard || "",
           bankCard || "",
           piutangVal,
-          umVal,
-          umNomorVal,
+          umValEff,
+          umNomorHdr,
           now,
           username,
           dateline || null,
@@ -461,6 +560,21 @@ const saveData = async (payload, user) => {
         ]
       );
       index++;
+    }
+
+    // ── Detail pemakaian uang muka (Get DP, bisa beberapa deposit) ──────
+    // Dibersihkan dulu supaya edit nota yang menghapus/ubah alokasi DP
+    // tidak meninggalkan baris bekas (sisa deposit jadi tetap akurat).
+    await conn.query(`DELETE FROM tso_um_dtl WHERE so_umd_so_nomor = ?`, [actualNomor]);
+    let umNourut = 0;
+    for (const row of umDetailRows) {
+      umNourut++;
+      await conn.query(
+        `INSERT INTO tso_um_dtl
+           (so_umd_so_nomor, so_umd_jur_no, so_umd_nilai, so_umd_nourut)
+         VALUES (?, ?, ?, ?)`,
+        [actualNomor, row.jurNo, row.nilai, umNourut]
+      );
     }
 
     // ── Kartu stok: pengurangan stok penjualan langsung (idempotent per nomor) ──
@@ -642,6 +756,6 @@ const takePending = async (noPending, user) => {
 };
 
 module.exports = {
-  getCustomerOptions, getBarangOptions, getUangMukaOptions, getDetailForm, saveData,
+  getCustomerOptions, getBarangOptions, getUangMukaOptions, getCustomerDp, getDetailForm, saveData,
   savePending, getPendingList, takePending,
 };

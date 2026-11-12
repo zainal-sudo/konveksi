@@ -30,6 +30,21 @@ module.exports = {
       res.status(500).json({ success: false, message: e.message });
     }
   },
+  getCustomerDp: async (req, res) => {
+    try {
+      res.json({
+        success: true,
+        data: await svc.getCustomerDp(
+          req.query.cusKode || "",
+          req.query.target || 0,
+          req.query.excludeNomor || "",
+          req.user?.cabang || "00"
+        ),
+      });
+    } catch (e) {
+      res.status(500).json({ success: false, message: e.message });
+    }
+  },
   getDetailForm: async (req, res) => {
     try {
       res.json({ success: true, data: await svc.getDetailForm(req.params.nomor) });

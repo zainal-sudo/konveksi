@@ -7,6 +7,7 @@ const menuId = 22;;
 router.get("/customer", verifyToken, checkPermission(menuId, "view"), ctrl.getCustomerOptions);
 router.get("/barang", verifyToken, checkPermission(menuId, "view"), ctrl.getBarangOptions);
 router.get("/uang-muka", verifyToken, checkPermission(menuId, "view"), ctrl.getUangMukaOptions);
+router.get("/dp", verifyToken, checkPermission(menuId, "view"), ctrl.getCustomerDp);
 router.get("/form/:nomor", verifyToken, checkPermission(menuId, "view"), ctrl.getDetailForm);
 router.post("/save", verifyToken, checkPermission(menuId, "insert"), ctrl.saveData);
 router.post("/pending-save", verifyToken, checkPermission(menuId, "insert"), ctrl.savePending);

@@ -8,8 +8,10 @@ const db = require("../config/database");
  *   Dr {cbg_rek_kas} KAS CABANG        = so_dp     (cash diterima - kembalian)
  *   Dr 12.001 BANK                     = so_card   (card / debit)
  *   Dr {cbg_rek_piutang} PIUTANG       = so_piutang
- *   Dr {cbg_rek_umpenjualan} U.MUKA PJ = so_umpenjualan (bayar dari deposit
- *                                        Penerimaan Lain-Lain, so_um_nomor)
+ *   Dr {cbg_rek_umpenjualan} U.MUKA PJ = pemakaian deposit (Get DP —
+ *                                        bisa lebih dari satu baris, satu
+ *                                        per Penerimaan Lain-Lain yang
+ *                                        terpakai, lihat tso_um_dtl)
  *   Dr 21.004 POTONGAN PENJULAN        = diskon faktur + voucher
  *   Dr 23.001 BIAYA PRODUKSI           = Σ (qty keluar x HPP barang)   [HPP penjualan]
  *   Cr {cbg_rek_penjualan} PENJUALAN   = bruto barang (Σ qty x harga x disc item)
@@ -122,6 +124,24 @@ const createAutoJurnalPenjualan = async (conn, data) => {
   );
   if (!h) return null;
 
+  // ── Detail pemakaian uang muka (Get DP) — bisa beberapa deposit per nota ──
+  // Sumber kebenaran: tso_um_dtl. Bila kosong (data lama belum termigrasi),
+  // fallback ke kolom lama tso_hdr.so_umpenjualan + so_um_nomor.
+  const [umRows] = await conn.query(
+    `SELECT so_umd_jur_no AS jurNo, so_umd_nilai AS nilai
+       FROM tso_um_dtl
+      WHERE so_umd_so_nomor = ? AND IFNULL(so_umd_nilai, 0) <> 0
+      ORDER BY so_umd_nourut ASC`,
+    [nomor]
+  );
+  const umDetail = (umRows || []).map((r) => ({
+    jurNo: String(r.jurNo || "").trim(),
+    nilai: Math.round(Number(r.nilai) || 0),
+  }));
+  const umPenjualan = umDetail.length
+    ? umDetail.reduce((s, u) => s + u.nilai, 0)
+    : Math.round(Number(h.umPenjualan) || 0);
+
   const amount = Math.round(Number(h.so_amount) || 0);
   const tax = Math.round(Number(h.so_taxamount) || 0);
   const ongkir = Math.round(Number(h.so_ongkir) || 0);
@@ -129,7 +149,6 @@ const createAutoJurnalPenjualan = async (conn, data) => {
   const bank = Math.round(Number(h.so_card) || 0);
   const piutang = Math.round(Number(h.so_piutang) || 0);
   const voucher = Math.round(Number(h.so_voucher) || 0);
-  const umPenjualan = Math.round(Number(h.umPenjualan) || 0);
 
   // Bruto barang = nilai barang sebelum diskon faktur
   const [[dt]] = await conn.query(
@@ -183,18 +202,32 @@ const createAutoJurnalPenjualan = async (conn, data) => {
     { rek: rekKasCabang, ket: `Kas tunai penjualan ${nomor} - ${cusNama}`, nilai: kas },
     { rek: REK_BANK, ket: `Card pembayaran ${nomor}`, nilai: bank },
     { rek: rekPiutangCabang, ket: `Piutang penjualan ${nomor} - ${cusNama}`, nilai: piutang },
-    {
+  ];
+  // Pemakaian uang muka: SATU BARIS per deposit yang terpakai (Get DP) —
+  // keterangan menyebut nomor penerimaan lain-lain sumbernya.
+  for (const u of umDetail) {
+    debets.push({
+      rek: rekUmPenjualanCabang,
+      ket: `Pakai uang muka ${u.jurNo} penjualan ${nomor} - ${cusNama}`,
+      nilai: u.nilai,
+    });
+  }
+  // Fallback data lama (belum ada baris di tso_um_dtl)
+  if (umDetail.length === 0 && umPenjualan > 0) {
+    debets.push({
       rek: rekUmPenjualanCabang,
       ket: `Pakai uang muka ${h.umNomor || ""} penjualan ${nomor} - ${cusNama}`.trim(),
       nilai: umPenjualan,
-    },
+    });
+  }
+  debets.push(
     {
       rek: REK_POTONGAN,
       ket: `Potongan penjualan ${nomor}${voucher ? ` (voucher ${h.so_no_voucher || ""})` : ""}`,
       nilai: potongan,
     },
-    { rek: REK_HPP, ket: `HPP penjualan ${nomor} - ${cusNama}`, nilai: Math.round(totalHpp) },
-  ];
+    { rek: REK_HPP, ket: `HPP penjualan ${nomor} - ${cusNama}`, nilai: Math.round(totalHpp) }
+  );
   const kredits = [
     { rek: rekPenjualanCabang, ket: `Penjualan barang ${nomor} - ${cusNama}`, nilai: bruto },
     { rek: REK_ONGKIR, ket: `Ongkir ditagih penjualan ${nomor}`, nilai: ongkir },
