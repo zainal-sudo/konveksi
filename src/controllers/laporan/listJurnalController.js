@@ -9,7 +9,7 @@ const getListJurnal = async (req, res) => {
         success: false,
         message: "startDate dan endDate wajib.",
       });
-    const data = await svc.getListJurnal(startDate, endDate);
+    const data = await svc.getListJurnal(startDate, endDate, req.user?.cabang);
     res.json({ success: true, data });
   } catch (e) {
     res.status(500).json({ success: false, message: e.message });

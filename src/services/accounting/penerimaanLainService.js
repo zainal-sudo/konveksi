@@ -39,11 +39,13 @@ const getBrowseDetail = async (nomor) => {
        r.rek_nama AS AccountName,
        d.jurd_debet AS Debet,
        d.jurd_kredit AS Kredit,
-       IFNULL(c.cc_nama, '') AS CostCenter
+       IFNULL(c.cc_nama, '') AS CostCenter,
+       IFNULL(cu.cus_nama, '') AS Customer
      FROM tjurnal j
      INNER JOIN tjurnalitem d ON j.jur_no = d.jurd_jur_no
      INNER JOIN trekening r ON r.rek_kode = d.jurd_rek_kode
      LEFT JOIN tcostcenter c ON c.cc_kode = d.jurd_cc_kode
+     LEFT JOIN tcustomer cu ON cu.cus_kode = d.jurd_cus_kode
      WHERE j.jur_no = ?
      ORDER BY j.jur_no, d.jurd_nourut`,
     [nomor]
