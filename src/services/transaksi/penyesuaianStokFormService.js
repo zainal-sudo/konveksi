@@ -1,5 +1,6 @@
 const db = require("../../config/database");
 const { acquireLock, releaseLock } = require("../../utils/nomorLock");
+const { createAutoJurnalKoreksiStok } = require("../../utils/jurnalKoreksiStok");
 
 // ── List gudang untuk SearchModal ────────────────────────────────────────
 // User cabang hanya melihat gudang milik cabangnya (gdg_cbg_kode);
@@ -267,6 +268,9 @@ const saveData = async (payload, user) => {
 
       seq++;
     }
+
+    // Buat jurnal otomatis
+    await createAutoJurnalKoreksiStok(conn, { nomor: actualNomor, user: username });
 
     await conn.commit();
     return { nomor: actualNomor };
