@@ -83,6 +83,7 @@ const getBarangOptions = async (search = "") => {
         brg_hrgbeli   AS hrgBeli
      FROM tbarang
      WHERE brg_nama LIKE ? OR brg_kode LIKE ?
+     ORDER BY brg_kode ASC
      LIMIT 100`,
     [`%${search}%`, `%${search}%`]
   );
