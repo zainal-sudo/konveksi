@@ -159,12 +159,27 @@ const getSales = async (user = {}, cabangQuery) => {
     `SELECT c.cus_nama AS nama,
             IFNULL(SUM(h.so_amount + IFNULL(h.so_ongkir,0)),0) AS nilai,
             COUNT(*) AS nota
-     FROM tso_hdr h
-     LEFT JOIN tcustomer c ON c.cus_kode = h.so_cus_kode
+      FROM tso_hdr h
+      LEFT JOIN tcustomer c ON c.cus_kode = h.so_cus_kode
+      WHERE h.so_tanggal >= ? AND h.so_tanggal < ? ${filter.sql}
+      GROUP BY h.so_cus_kode, c.cus_nama
+      ORDER BY nilai DESC
+      LIMIT 5`,
+    [moStart, nextStart, ...filter.params],
+  );
+
+  // 6b) Penjualan per Kategori bulan berjalan
+  const [perKategori] = await db.query(
+    `SELECT IFNULL(k.ktg_nama, '(Tanpa Kategori)') AS kategori,
+            IFNULL(SUM(d.sod_qty * (d.sod_harga * (100 - IFNULL(d.sod_discpr,0)) / 100)), 0) AS nilai,
+            IFNULL(SUM(d.sod_qty), 0) AS qty
+     FROM tso_dtl d
+     INNER JOIN tso_hdr h ON h.so_nomor = TRIM(d.sod_so_nomor)
+     INNER JOIN tbarang b ON b.brg_kode = d.sod_brg_kode
+     LEFT JOIN tkategori k ON k.ktg_kode = b.brg_ktg_kode
      WHERE h.so_tanggal >= ? AND h.so_tanggal < ? ${filter.sql}
-     GROUP BY h.so_cus_kode, c.cus_nama
-     ORDER BY nilai DESC
-     LIMIT 5`,
+     GROUP BY k.ktg_nama
+     ORDER BY nilai DESC`,
     [moStart, nextStart, ...filter.params],
   );
 
@@ -234,6 +249,11 @@ const getSales = async (user = {}, cabangQuery) => {
       nama: r.nama || "(Lainnya)",
       nilai: Number(r.nilai),
       nota: Number(r.nota),
+    })),
+    perKategori: perKategori.map((r) => ({
+      kategori: r.kategori,
+      nilai: Number(r.nilai),
+      qty: Number(r.qty),
     })),
     terbaru: terbaru.map((r) => ({
       nomor: r.nomor,
