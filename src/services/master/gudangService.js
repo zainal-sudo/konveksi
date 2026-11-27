@@ -4,6 +4,7 @@ const getAll = async () => {
   const [rows] = await db.query(
     `SELECT g.gdg_kode AS kode, g.gdg_nama AS nama, g.gdg_penanggungjawab AS penanggungjawab,
             g.gdg_keterangan AS keterangan, g.gdg_cbg_kode AS cabang,
+            g.gdg_rek_persediaan AS rekPersediaan,
             c.cbg_nama AS cabangNama
        FROM tgudang g
        LEFT JOIN tcabang c ON c.cbg_kode = g.gdg_cbg_kode
@@ -20,8 +21,9 @@ const getCabang = async () => {
 };
 
 const saveData = async (payload) => {
-  const { isEdit, kode, nama, penanggungjawab, keterangan, cabang } = payload;
+  const { isEdit, kode, nama, penanggungjawab, keterangan, cabang, rekPersediaan } = payload;
   const cbg = (cabang || "00").toUpperCase().slice(0, 2);
+  const rekPers = String(rekPersediaan || "").trim() || null;
   // Cabang wajib terdaftar
   const [[cab]] = await db.query(`SELECT cbg_kode FROM tcabang WHERE cbg_kode = ?`, [cbg]);
   if (!cab) throw new Error(`Cabang '${cbg}' tidak terdaftar di master cabang.`);
@@ -40,9 +42,10 @@ const saveData = async (payload) => {
 
     await db.query(
       `UPDATE tgudang
-          SET gdg_nama = ?, gdg_penanggungjawab = ?, gdg_keterangan = ?, gdg_cbg_kode = ?
+          SET gdg_nama = ?, gdg_penanggungjawab = ?, gdg_keterangan = ?, gdg_cbg_kode = ?,
+              gdg_rek_persediaan = ?
         WHERE gdg_kode = ?`,
-      [nama, penanggungjawab, keterangan, cbg, kode]
+      [nama, penanggungjawab, keterangan, cbg, rekPers, kode]
     );
   } else {
     const [[dupe]] = await db.query(
@@ -50,9 +53,9 @@ const saveData = async (payload) => {
     );
     if (dupe) throw new Error(`Kode gudang '${kode}' sudah ada.`);
     await db.query(
-      `INSERT INTO tgudang (gdg_kode, gdg_nama, gdg_penanggungjawab, gdg_keterangan, gdg_cbg_kode)
-       VALUES (?, ?, ?, ?, ?)`,
-      [kode, nama, penanggungjawab, keterangan, cbg]
+      `INSERT INTO tgudang (gdg_kode, gdg_nama, gdg_penanggungjawab, gdg_keterangan, gdg_cbg_kode, gdg_rek_persediaan)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [kode, nama, penanggungjawab, keterangan, cbg, rekPers]
     );
   }
   return { kode };

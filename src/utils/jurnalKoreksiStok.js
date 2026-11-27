@@ -8,21 +8,43 @@ const db = require("../config/database");
  *
  * Aturan Penjurnalan:
  * 1. Koreksi POSITIF (Qty > 0):
- *    Dr. Akun Persediaan (diambil dari tgroup.gr_rek_kode / tcabang / fallback)
- *    Cr. Akun Selisih Persediaan / Pendapatan Lain-lain / Beban Penyesuaian (bisa dikonfigurasi, default '71.002' / '1.7.02' atau akun selisih persediaan).
- *
+ *    Dr. Akun Persediaan gudang vs Cr. 23.016 BY PENYESUAIAN STOK
  * 2. Koreksi NEGATIF (Qty < 0):
- *    Dr. Akun Selisih Persediaan / Beban Penyesuaian Stok (default '71.002' atau sejenisnya)
- *    Cr. Akun Persediaan
+ *    Dr. 23.016 BY PENYESUAIAN STOK vs Cr. Akun Persediaan gudang
  *
- * Karena penyesuaian stok dalam 1 nota koreksi bisa berisi banyak barang
- * dengan akun persediaan berbeda, nilai diakumulasikan per akun persediaan.
+ * Akun persediaan diambil dari gudang transaksi (tgudang.gdg_rek_persediaan).
+ * Kalau gudang belum diset, fallback ke akun persediaan cabang gudang
+ * (tcabang.cbg_rek_persediaan), lalu ke akun jenis barang (tgroup.gr_rek_kode),
+ * lalu 17.004. Jadi koreksi di gudang cabang AA (17.006) / CC (17.007) tidak
+ * lagi menumpuk ke persediaan pusat (17.004).
  */
 
-const REK_DEFAULT_SELISIH = "71.002"; // Akun selisih persediaan / beban penyesuaian default
-const REK_DEFAULT_PERSEDIAAN = "17.004"; // Fallback persediaan
+const REK_SELISIH = "23.016"; // BY PENYESUAIAN STOK
+const REK_DEFAULT_PERSEDIAAN = "17.004"; // Fallback persediaan (pusat)
 
 const jurNoOf = (nomor) => nomor;
+
+// ── Akun persediaan untuk satu gudang ─────────────────────────────────
+// Urutan: setting gudang → akun persediaan cabang gudang → null (nanti
+// fallback ke akun jenis barang per item).
+const getGudangRek = async (conn, gdgKode) => {
+  if (!gdgKode) return null;
+  const [[g]] = await conn.query(
+    `SELECT gdg_cbg_kode, gdg_rek_persediaan FROM tgudang WHERE gdg_kode = ?`,
+    [gdgKode]
+  );
+  const rekGdg = String(g?.gdg_rek_persediaan || "").trim();
+  if (rekGdg) return rekGdg;
+  if (g?.gdg_cbg_kode) {
+    const [[c]] = await conn.query(
+      `SELECT cbg_rek_persediaan FROM tcabang WHERE cbg_kode = ?`,
+      [g.gdg_cbg_kode]
+    );
+    const rekCbg = String(c?.cbg_rek_persediaan || "").trim();
+    if (rekCbg) return rekCbg;
+  }
+  return null;
+};
 
 // ── Ambil rekening persediaan per barang (lewat tgroup) ────────────────
 const getBarangRek = async (conn, brgKodes) => {
@@ -103,46 +125,42 @@ const createAutoJurnalKoreksiStok = async (conn, data) => {
   );
   if (!details.length) return null;
 
+  // Akun persediaan utama = gudang transaksi (fallback per barang di bawah)
+  const rekGudang = await getGudangRek(conn, hdr.korh_gdg_kode);
   const brgKodes = details.map((d) => d.kord_brg_kode);
   const brgRekMap = await getBarangRek(conn, brgKodes);
 
-  // Pisahkan antara koreksi positif (qty > 0) dan negatif (qty < 0) atau kelompokkan per akun
   // Qty > 0: Penambahan persediaan (Dr. Persediaan, Cr. Selisih Persediaan)
   // Qty < 0: Pengurangan persediaan (Dr. Selisih Persediaan, Cr. Persediaan)
-  
-  let debetsMap = {};
-  let kreditsMap = {};
+  // Dihitung net per akun supaya nota campuran (ada + dan -) tidak gross-up.
+  let netMap = {};
 
   for (const d of details) {
     const qty = Number(d.kord_qty) || 0;
     const nilai = Math.abs(Number(d.kord_nilai) || (qty * (Number(d.kord_harga) || 0)));
     if (nilai <= 0) continue;
 
-    const rekBarang = brgRekMap[d.kord_brg_kode] || REK_DEFAULT_PERSEDIAAN;
-    const ketItem = `Koreksi stok ${nomor} - Brg: ${d.kord_brg_kode} (${qty} ${d.kord_satuan || ''})`;
+    const rekBarang = rekGudang || brgRekMap[d.kord_brg_kode] || REK_DEFAULT_PERSEDIAAN;
 
     if (qty > 0) {
       // Tambah stok: Dr. Persediaan, Cr. Selisih Persediaan
-      debetsMap[rekBarang] = (debetsMap[rekBarang] || 0) + nilai;
-      kreditsMap[REK_DEFAULT_SELISIH] = (kreditsMap[REK_DEFAULT_SELISIH] || 0) + nilai;
+      netMap[rekBarang] = (netMap[rekBarang] || 0) + nilai;
+      netMap[REK_SELISIH] = (netMap[REK_SELISIH] || 0) - nilai;
     } else {
       // Kurang stok: Dr. Selisih Persediaan, Cr. Persediaan
-      debetsMap[REK_DEFAULT_SELISIH] = (debetsMap[REK_DEFAULT_SELISIH] || 0) + nilai;
-      kreditsMap[rekBarang] = (kreditsMap[rekBarang] || 0) + nilai;
+      netMap[REK_SELISIH] = (netMap[REK_SELISIH] || 0) + nilai;
+      netMap[rekBarang] = (netMap[rekBarang] || 0) - nilai;
     }
   }
 
-  const debets = Object.keys(debetsMap).map((rek) => ({
-    rek,
-    ket: hdr.korh_notes || `Penyesuaian Stok ${nomor}`,
-    nilai: debetsMap[rek],
-  }));
-
-  const kredits = Object.keys(kreditsMap).map((rek) => ({
-    rek,
-    ket: hdr.korh_notes || `Penyesuaian Stok ${nomor}`,
-    nilai: kreditsMap[rek],
-  }));
+  const ket = hdr.korh_notes || `Penyesuaian Stok ${nomor}`;
+  const debets = [];
+  const kredits = [];
+  for (const rek of Object.keys(netMap)) {
+    const v = Math.round(netMap[rek]);
+    if (v > 0) debets.push({ rek, ket, nilai: v });
+    else if (v < 0) kredits.push({ rek, ket, nilai: -v });
+  }
 
   if (!debets.length || !kredits.length) return null;
 
